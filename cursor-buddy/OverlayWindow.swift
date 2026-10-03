@@ -835,7 +835,7 @@ struct BlueCursorView: View {
                     y: 0
                 )
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen && (cursorState.voiceState == .idle || cursorState.voiceState == .responding) ? cursorOpacity : 0)
+                .opacity(buddyIsVisibleOnThisScreen && (cursorState.voiceState == .idle || isPointingWhileResponding) ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(
                     buddyNavigationMode == .followingCursor
@@ -873,6 +873,18 @@ struct BlueCursorView: View {
                 .animation(cursorFollowAnimation, value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: cursorState.voiceState)
 
+            // Blue waveform — replaces the mascot while OpenClicky speaks,
+            // driven by the loudness of the spoken reply. The mascot comes
+            // back for the pointing flight so it can still point at things.
+            BlueCursorPlaybackWaveformView(
+                cursorColor: overlayCursorColor,
+                isActive: isSpeakingAtCursor
+            )
+                .opacity(isSpeakingAtCursor ? cursorOpacity : 0)
+                .position(cursorPosition)
+                .animation(cursorFollowAnimation, value: cursorPosition)
+                .animation(.easeIn(duration: 0.15), value: cursorState.voiceState)
+
             // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS)
             BlueCursorSpinnerView(
                 cursorColor: overlayCursorColor,
@@ -889,7 +901,7 @@ struct BlueCursorView: View {
         .onAppear {
             // Set initial cursor position immediately before starting animation
             let mouseLocation = NSEvent.mouseLocation
-            isCursorOnThisScreen = screenFrame.contains(mouseLocation)
+            isCursorOnThisScreen = screenContainsCursor(mouseLocation)
 
             let swiftUIPosition = convertScreenPointToSwiftUICoordinates(mouseLocation)
             self.cursorPosition = CGPoint(x: swiftUIPosition.x + 35, y: swiftUIPosition.y + 25)
@@ -973,6 +985,18 @@ struct BlueCursorView: View {
         }
     }
 
+    /// Speaking with the buddy parked at the cursor: show the waveform.
+    private var isSpeakingAtCursor: Bool {
+        buddyIsVisibleOnThisScreen
+            && cursorState.voiceState == .responding
+            && buddyNavigationMode == .followingCursor
+    }
+
+    /// Speaking while flying to or pointing at a target: keep the mascot.
+    private var isPointingWhileResponding: Bool {
+        cursorState.voiceState == .responding && buddyNavigationMode != .followingCursor
+    }
+
     private var shouldShowAgentTaskBubble: Bool {
         buddyIsVisibleOnThisScreen
             && buddyNavigationMode == .followingCursor
@@ -1004,7 +1028,7 @@ struct BlueCursorView: View {
     private func circleSelectLiveTrail(_ localPoints: [CGPoint], dimmed: Bool) -> some View {
         OpenClickyFadingTrailView(
             points: localPoints,
-            color: Color(red: 0.86, green: 0.28, blue: 0.24),
+            color: overlayCursorColor,
             reduceMotion: accessibilityReduceMotion,
             overallOpacity: dimmed ? 0.35 : 1.0
         )
@@ -1015,7 +1039,7 @@ struct BlueCursorView: View {
     @ViewBuilder
     private func circleSelectSnappedHighlight(_ screenRect: CGRect, label: String?) -> some View {
         let localRect = convertScreenRectToSwiftUICoordinates(screenRect)
-        let trailColor = Color(red: 0.86, green: 0.28, blue: 0.24)
+        let trailColor = overlayCursorColor
         ZStack {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(trailColor.opacity(0.10))
@@ -1261,6 +1285,14 @@ struct BlueCursorView: View {
         cursorTrackingTimer = dispatchTimer
     }
 
+    /// Whether the pointer is on this screen. `CGRect.contains` excludes the
+    /// far edges, but the pointer reports exactly those values when it is
+    /// pushed against the top or right edge (for example in the menu bar),
+    /// so allow one point of slack.
+    private func screenContainsCursor(_ mouseLocation: CGPoint) -> Bool {
+        screenFrame.insetBy(dx: -1, dy: -1).contains(mouseLocation)
+    }
+
     private func updateCursorTracking() {
         // H9: skip the cursor-tracking work when the buddy is hidden on this
         // screen, so a multi-display setup doesn't pay for per-frame state
@@ -1269,9 +1301,15 @@ struct BlueCursorView: View {
         // @State-backed `buddyIsVisibleOnThisScreen` must be read via SwiftUI's
         // live indirection — capturing `self` in the background closure would
         // snapshot stale state, and `[weak self]` is illegal on a value type.
-        guard buddyIsVisibleOnThisScreen else { return }
+        // Refresh which screen holds the pointer before the visibility guard.
+        // The guard depends on this flag, so updating it only afterwards
+        // meant one "not on this screen" sample hid the buddy for good.
         let mouseLocation = NSEvent.mouseLocation
-        isCursorOnThisScreen = screenFrame.contains(mouseLocation)
+        let cursorIsOnThisScreen = screenContainsCursor(mouseLocation)
+        if isCursorOnThisScreen != cursorIsOnThisScreen {
+            isCursorOnThisScreen = cursorIsOnThisScreen
+        }
+        guard buddyIsVisibleOnThisScreen else { return }
 
         // During forward flight or pointing, the buddy is NOT interrupted by
         // mouse movement — it completes its full animation and return flight.
@@ -2007,6 +2045,28 @@ private struct BlueCursorWaveformView: View {
         let reactiveHeight = easedAudioPowerLevel * 10 * listeningBarProfile[barIndex]
         let idlePulse = (sin(animationPhase) + 1) / 2 * 1.5
         return 3 + reactiveHeight + idlePulse
+    }
+}
+
+/// The cursor waveform driven by OpenClicky's spoken output. Observes the
+/// playback level here, in a leaf view, so level updates do not re-render
+/// the whole overlay.
+private struct BlueCursorPlaybackWaveformView: View {
+    let cursorColor: Color
+    let isActive: Bool
+    @ObservedObject private var playbackLevelMonitor = TTSPlaybackLevelMonitor.shared
+
+    init(cursorColor: Color, isActive: Bool) {
+        self.cursorColor = cursorColor
+        self.isActive = isActive
+    }
+
+    var body: some View {
+        BlueCursorWaveformView(
+            audioPowerLevel: isActive ? playbackLevelMonitor.level : 0,
+            cursorColor: cursorColor,
+            isActive: isActive
+        )
     }
 }
 

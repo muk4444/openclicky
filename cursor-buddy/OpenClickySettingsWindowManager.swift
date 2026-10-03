@@ -611,7 +611,7 @@ struct OpenClickySettingsView: View {
 
                 toggleRow(
                     title: "Circle while talking",
-                    subtitle: "Hold push-to-talk, then click and drag a red trail around something while speaking. On release, the region goes with your spoken instruction.",
+                    subtitle: "Hold push-to-talk, then click and drag a trail around something while speaking. On release, the region goes with your spoken instruction.",
                     systemImageName: "pencil.tip.crop.circle",
                     isOn: $circleWhileTalkingEnabled
                 )

@@ -2678,7 +2678,7 @@ final class CompanionManager: ObservableObject {
         cursorOverlayState.externalSecondaryCursors.removeAll { $0.id == id }
     }
 
-    private static let visualGuidanceOverlayDisplaySeconds: TimeInterval = 3
+    private static let visualGuidanceOverlayDisplaySeconds: TimeInterval = 10
 
     func showVisualGuidanceOverlay(
         _ overlay: OpenClickyVisualGuidanceOverlay,

@@ -20,6 +20,11 @@ enum CircleSelectSnapResolver {
     private typealias Geometry = CircleSelectSnapGeometry
     private typealias ScoredCandidate = CircleSelectSnapGeometry.ScoredCandidate
 
+    /// Share of the circled bounds a snap target must fill.
+    private static let minimumCoverageOfCircle: CGFloat = 0.45
+    /// How much larger than the circled bounds a snap target may be.
+    private static let maximumAreaRelativeToCircle: CGFloat = 2.5
+
     private static let maxAXNodes = 400
     private static let maxAXDepth = 10
 
@@ -47,7 +52,21 @@ enum CircleSelectSnapResolver {
             speechTokens: speechTokens
         ))
 
-        guard let best = candidates.max(by: { $0.score < $1.score }), best.score >= 0.35 else {
+        // Only snap to a target that is about as large as what was circled.
+        // The score alone favours small controls that sit fully inside the
+        // loop, so a circle around a whole field used to collapse onto one
+        // button in it. With no comparable target the caller keeps the drawn
+        // region as is.
+        let comparableCandidates = candidates.filter { candidate in
+            let overlap = candidate.rect.intersection(pathBounds)
+            guard !overlap.isNull else { return false }
+            let overlapArea = overlap.width * overlap.height
+            let candidateArea = max(candidate.rect.width * candidate.rect.height, 1)
+            return overlapArea / pathArea >= minimumCoverageOfCircle
+                && candidateArea / pathArea <= maximumAreaRelativeToCircle
+        }
+
+        guard let best = comparableCandidates.max(by: { $0.score < $1.score }), best.score >= 0.35 else {
             return nil
         }
 

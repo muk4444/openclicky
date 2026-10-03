@@ -10,6 +10,7 @@
 //
 
 import AVFoundation
+import Combine
 import Foundation
 import os
 
@@ -58,6 +59,7 @@ enum TTSStreamingPlaybackEngine {
         // session owner is responsible for keeping the engine running
         // for the full response; if it stopped, the response is over.
         guard engine.isRunning else { return 0 }
+        TTSPlaybackLevelTap.attachIfNeeded(to: engine)
         let playerID = ObjectIdentifier(player)
         PendingBufferTracker.shared.increment(playerID)
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in
@@ -68,6 +70,9 @@ enum TTSStreamingPlaybackEngine {
         }
         return AVAudioFramePosition(buffer.frameLength)
     }
+
+    /// Time left for the output device to finish the final buffer.
+    private static let playbackTailNanoseconds: UInt64 = 200_000_000
 
     static func waitForPlaybackToDrain(
         _ player: AVAudioPlayerNode,
@@ -101,7 +106,15 @@ enum TTSStreamingPlaybackEngine {
             try? await Task.sleep(nanoseconds: 80_000_000)
         }
 
+        // The last buffer is reported as played when it has been rendered,
+        // which is slightly before it has left the output device. Stopping
+        // right away cuts that tail off mid-wave and is heard as a click.
+        if !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: playbackTailNanoseconds)
+        }
+
         stopPlayerIfAttached(player)
+        TTSPlaybackLevelMonitor.shared.reset()
     }
 
     nonisolated static func stopPlayerIfAttached(_ player: AVAudioPlayerNode) {
@@ -109,6 +122,66 @@ enum TTSStreamingPlaybackEngine {
         player.stop()
     }
 
+}
+
+/// Loudness of OpenClicky's spoken output, for UI meters such as the notch
+/// waveform. Values are roughly 0...1, in the same range the microphone
+/// power level uses.
+@MainActor
+final class TTSPlaybackLevelMonitor: ObservableObject {
+    static let shared = TTSPlaybackLevelMonitor()
+
+    @Published private(set) var level: CGFloat = 0
+
+    /// Fast attack, slower release, so the bars follow speech without flicker.
+    func update(_ newLevel: CGFloat) {
+        level = newLevel > level ? newLevel : level * 0.8 + newLevel * 0.2
+    }
+
+    func reset() {
+        level = 0
+    }
+}
+
+/// Installs one output tap per playback engine to feed
+/// `TTSPlaybackLevelMonitor`. Kept nonisolated because the tap block runs on
+/// an audio thread.
+nonisolated enum TTSPlaybackLevelTap {
+    nonisolated(unsafe) private static let tappedEngines = NSHashTable<AVAudioEngine>.weakObjects()
+    private static let lock = NSLock()
+
+    static func attachIfNeeded(to engine: AVAudioEngine) {
+        lock.lock()
+        let alreadyTapped = tappedEngines.contains(engine)
+        if !alreadyTapped {
+            tappedEngines.add(engine)
+        }
+        lock.unlock()
+        guard !alreadyTapped else { return }
+
+        let mixer = engine.mainMixerNode
+        let format = mixer.outputFormat(forBus: 0)
+        guard format.sampleRate > 0, format.channelCount > 0 else { return }
+        mixer.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, _ in
+            let level = rootMeanSquareLevel(of: buffer)
+            Task { @MainActor in
+                TTSPlaybackLevelMonitor.shared.update(level)
+            }
+        }
+    }
+
+    private static func rootMeanSquareLevel(of buffer: AVAudioPCMBuffer) -> CGFloat {
+        guard let channel = buffer.floatChannelData?[0] else { return 0 }
+        let frameCount = Int(buffer.frameLength)
+        guard frameCount > 0 else { return 0 }
+        var sumOfSquares: Float = 0
+        for frame in 0..<frameCount {
+            let sample = channel[frame]
+            sumOfSquares += sample * sample
+        }
+        let rootMeanSquare = (sumOfSquares / Float(frameCount)).squareRoot()
+        return CGFloat(min(1, rootMeanSquare * 2))
+    }
 }
 
 /// Counts buffers scheduled on each player that have not finished playing.

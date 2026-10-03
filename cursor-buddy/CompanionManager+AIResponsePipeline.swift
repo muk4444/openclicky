@@ -1357,6 +1357,13 @@ extension CompanionManager {
         to transcript: String,
         recentConversationHistory: [(userPlaceholder: String, assistantResponse: String)] = []
     ) -> Bool {
+        // Without Agent Mode every turn is about explaining or pointing at
+        // the screen, and the English-only keyword check below misses other
+        // languages, so always attach the screen.
+        if !AppBundleConfiguration.isAgentModeEnabled {
+            return true
+        }
+
         let normalized = transcript
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             .lowercased()

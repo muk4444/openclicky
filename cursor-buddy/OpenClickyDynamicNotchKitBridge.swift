@@ -758,68 +758,13 @@ private struct OpenClickyDynamicNotchKitCompactLeadingView: View {
     @ObservedObject var model: OpenClickyDynamicNotchKitModel
 
     var body: some View {
-        HStack(spacing: 8) {
-            compactAppIcon
-            if let appName = compactAppName {
-                Text(appName)
-                    .font(.system(size: 13, weight: .heavy, design: .rounded))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .foregroundStyle(.white.opacity(0.94))
-            }
-        }
-        // DynamicNotchKit lays compactLeading/compactTrailing on either side of
-        // the real MacBook notch. Compact mode should show the foreground app
-        // at a glance, but running-agent details belong in expanded/panel UI,
-        // not stretched across the menu bar.
-        .frame(width: compactWidth, height: 24, alignment: .leading)
-        .contentShape(Rectangle())
-        .onTapGesture { model.openNotch() }
-        .onChange(of: model.isDropTargeted) { _, targeted in
-            if targeted { model.openNotch() }
-        }
-        .onDrop(
-            of: [UTType.fileURL.identifier, UTType.url.identifier, UTType.image.identifier, UTType.png.identifier, UTType.jpeg.identifier, UTType.tiff.identifier],
-            isTargeted: $model.isDropTargeted,
-            perform: model.acceptDroppedAttachmentProviders
-        )
-        .accessibilityLabel(accessibilityAppName)
-    }
-
-    @ViewBuilder
-    private var compactAppIcon: some View {
-        HStack(spacing: 7) {
-            if let icon = model.foregroundAppIcon {
-                Image(nsImage: icon)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 22, height: 22)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-            } else {
-                Image(systemName: "app.fill")
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundStyle(Color(nsColor: model.activityAccentColor))
-                    .frame(width: 22, height: 22)
-            }
-        }
-        .animation(.easeInOut(duration: 0.18), value: model.isDoingSomething)
-    }
-
-    private var accessibilityAppName: String {
-        let name = model.foregroundAppName.trimmingCharacters(in: .whitespacesAndNewlines)
-        return name.isEmpty || name == "Current app" ? "Current app" : name
-    }
-
-    private var compactAppName: String? {
-        let name = accessibilityAppName
-        return name == "Current app" ? nil : name
-    }
-
-    private var compactWidth: CGFloat {
-        guard !model.isExpanded else { return 20 }
-        guard let compactAppName else { return 32 }
-        let nameWidth = CGFloat(compactAppName.count * 8) + 40
-        return min(156, max(112, nameWidth))
+        // The compact notch shows only OpenClicky's own indicator on the
+        // trailing side. DynamicNotchKit still lays out a leading slot, so
+        // keep it as an empty sliver instead of the foreground app's icon
+        // and name.
+        Color.clear
+            .frame(width: 4, height: 24)
+            .accessibilityHidden(true)
     }
 }
 
@@ -827,8 +772,11 @@ private struct OpenClickyDynamicNotchKitCompactTrailingView: View {
     @ObservedObject var model: OpenClickyDynamicNotchKitModel
 
     var body: some View {
+        // The compact notch is a still badge that only says OpenClicky is
+        // running. Listening, thinking and speaking are shown at the cursor
+        // buddy instead, so nothing here reacts to the voice state.
         HStack {
-            compactIndicator
+            OpenClickyDynamicNotchKitLogo(color: Color(nsColor: model.accentColor))
         }
         .frame(width: compactWidth, height: 24, alignment: .trailing)
         .contentShape(Rectangle())
@@ -841,54 +789,11 @@ private struct OpenClickyDynamicNotchKitCompactTrailingView: View {
             isTargeted: $model.isDropTargeted,
             perform: model.acceptDroppedAttachmentProviders
         )
-        .accessibilityLabel(indicatorLabel)
-    }
-
-    @ViewBuilder
-    private var compactIndicator: some View {
-        let color = Color(nsColor: model.activityAccentColor)
-        HStack(spacing: 4) {
-            switch model.mode {
-            case .voice(let phase):
-                if phase == .processing {
-                    OpenClickyDynamicNotchKitDots(color: color)
-                        .frame(width: 32, height: 14)
-                } else {
-                    OpenClickyDynamicNotchKitMiniMeter(level: model.audioPowerLevel, color: color)
-                        .frame(width: 32, height: 16)
-                }
-            case .collapsed:
-                OpenClickyDynamicNotchKitDots(color: color)
-                    .frame(width: 24, height: 12)
-            }
-        }
-        .padding(.horizontal, model.isDoingSomething ? 5 : 0)
-        .padding(.vertical, model.isDoingSomething ? 4 : 0)
-        .background(alignment: .trailing) {
-            if model.isDoingSomething {
-                OpenClickyDynamicNotchKitActivityGlow(color: color)
-                    .transition(.opacity.combined(with: .scale(scale: 0.82)))
-            }
-        }
-        .animation(.easeInOut(duration: 0.18), value: model.isDoingSomething)
-    }
-
-    private var indicatorLabel: String {
-        switch model.mode {
-        case .collapsed:
-            return model.hasRunningAgentWork ? "Agent work running" : "OpenClicky ready"
-        case .voice(let phase):
-            switch phase {
-            case .idle: return "Ready"
-            case .listening: return "Listening"
-            case .processing: return "Thinking"
-            case .responding: return "Speaking"
-            }
-        }
+        .accessibilityLabel("OpenClicky")
     }
 
     private var compactWidth: CGFloat {
-        model.isExpanded ? 20 : (model.isDoingSomething ? 52 : 28)
+        model.isExpanded ? 20 : 28
     }
 }
 
@@ -1470,6 +1375,39 @@ private struct OpenClickyDynamicNotchKitDots: View {
                     .shadow(color: .white.opacity(index == 1 ? 0.34 : 0.22), radius: 1, x: 0, y: -0.5)
             }
         }
+    }
+}
+
+/// OpenClicky's logo: the pointer triangle, tilted like the cursor buddy,
+/// knocked out of a round accent-coloured badge. Deliberately static.
+private struct OpenClickyDynamicNotchKitLogo: View {
+    let color: Color
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(color)
+            OpenClickyDynamicNotchKitLogoPointer()
+                .fill(Color.white)
+                .frame(width: 9, height: 9)
+                .rotationEffect(.degrees(-45))
+                .offset(x: 0.5, y: 0.5)
+        }
+        .frame(width: 17, height: 17)
+    }
+}
+
+/// An upward-pointing arrowhead with a notched base, the classic pointer
+/// silhouette reduced to four corners.
+private struct OpenClickyDynamicNotchKitLogoPointer: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY - rect.height * 0.28))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.closeSubpath()
+        return path
     }
 }
 

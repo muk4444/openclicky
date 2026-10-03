@@ -363,9 +363,24 @@ final class MistralTTSClient: OpenClickyTTSClient {
             mono[frame] = mixed / Float(channelCount)
         }
 
-        let resampled = resample(mono, from: format.sampleRate, to: streamSampleRate)
+        var resampled = resample(mono, from: format.sampleRate, to: streamSampleRate)
+        applyEdgeFades(to: &resampled)
         return resampled.map { sample in
             Int16(max(-1, min(1, sample)) * Float(Int16.max))
+        }
+    }
+
+    /// Ramps the first and last few milliseconds to silence. A clip that
+    /// starts or ends away from zero makes the speaker jump, which is heard
+    /// as a click at sentence boundaries and when playback stops.
+    nonisolated private static func applyEdgeFades(to samples: inout [Float]) {
+        let fadeLength = min(Int(streamSampleRate * 0.008), samples.count / 2)
+        guard fadeLength > 1 else { return }
+        let lastIndex = samples.count - 1
+        for offset in 0..<fadeLength {
+            let gain = Float(offset) / Float(fadeLength)
+            samples[offset] *= gain
+            samples[lastIndex - offset] *= gain
         }
     }
 
