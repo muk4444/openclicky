@@ -1378,34 +1378,33 @@ private struct OpenClickyDynamicNotchKitDots: View {
     }
 }
 
-/// OpenClicky's logo: the pointer triangle, tilted like the cursor buddy,
-/// knocked out of a round accent-coloured badge. Deliberately static.
+/// OpenClicky's mark in the compact notch: the same triangle as the cursor
+/// buddy, in the same shape, tilt and colour. Deliberately static.
 private struct OpenClickyDynamicNotchKitLogo: View {
     let color: Color
 
     var body: some View {
-        ZStack {
-            Circle()
-                .fill(color)
-            OpenClickyDynamicNotchKitLogoPointer()
-                .fill(Color.white)
-                .frame(width: 9, height: 9)
-                .rotationEffect(.degrees(-45))
-                .offset(x: 0.5, y: 0.5)
-        }
-        .frame(width: 17, height: 17)
+        OpenClickyDynamicNotchKitTriangleShape()
+            .fill(color)
+            .aspectRatio(0.86, contentMode: .fit)
+            .frame(height: 16)
+            .rotationEffect(.degrees(12))
     }
 }
 
-/// An upward-pointing arrowhead with a notched base, the classic pointer
-/// silhouette reduced to four corners.
-private struct OpenClickyDynamicNotchKitLogoPointer: Shape {
+private struct OpenClickyDynamicNotchKitTriangleShape: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY - rect.height * 0.28))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let size = min(rect.width, rect.height) * 0.82
+        let height = size * sqrt(3.0) / 2.0
+        let top = CGPoint(x: center.x, y: center.y + height * 0.56)
+        let bottomLeft = CGPoint(x: center.x - size / 2.0, y: center.y - height * 0.44)
+        let bottomRight = CGPoint(x: center.x + size / 2.0, y: center.y - height * 0.44)
+
+        path.move(to: top)
+        path.addLine(to: bottomLeft)
+        path.addLine(to: bottomRight)
         path.closeSubpath()
         return path
     }

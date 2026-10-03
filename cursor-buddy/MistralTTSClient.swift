@@ -36,6 +36,7 @@ final class MistralTTSClient: OpenClickyTTSClient {
     nonisolated private static let modelID = "voxtral-mini-tts-2603"
     nonisolated private static let voicesPageSize = 100
     nonisolated private static let maximumVoicePages = 10
+    nonisolated private static let diagnosticClipLimit = 12
 
     nonisolated static let streamSampleRate: Double = 24_000
     private static let chunkSampleCount = 2_048
@@ -237,7 +238,35 @@ final class MistralTTSClient: OpenClickyTTSClient {
               !audioData.isEmpty else {
             throw makeError(-14, "Mistral returned no audio")
         }
+        writeDiagnosticClip(audioData)
         return try decodeWAVDataToSamples(audioData)
+    }
+
+    /// Keeps the most recent sentence clips exactly as Mistral returned them,
+    /// so audio artifacts can be inspected after the fact. Stays on this Mac,
+    /// next to the message logs, and is capped at a handful of small files.
+    nonisolated private static func writeDiagnosticClip(_ wavData: Data) {
+        let fileManager = FileManager.default
+        guard let support = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        let directory = support
+            .appendingPathComponent("OpenClicky", isDirectory: true)
+            .appendingPathComponent("Logs", isDirectory: true)
+            .appendingPathComponent("mistral-tts-clips", isDirectory: true)
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            let milliseconds = Int(Date().timeIntervalSince1970 * 1_000)
+            let clipURL = directory.appendingPathComponent("clip-\(milliseconds)-\(UUID().uuidString.prefix(4)).wav")
+            try wavData.write(to: clipURL, options: [.atomic])
+
+            let clips = try fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "wav" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            for staleClip in clips.dropLast(diagnosticClipLimit) {
+                try? fileManager.removeItem(at: staleClip)
+            }
+        } catch {
+            // Diagnostics must never get in the way of speaking.
+        }
     }
 
     // MARK: Voices

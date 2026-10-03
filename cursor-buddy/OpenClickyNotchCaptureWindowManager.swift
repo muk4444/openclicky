@@ -1288,6 +1288,22 @@ final class OpenClickyNotchCaptureWindowManager {
 
 
     private static func notchHoverRegion(on screen: NSScreen) -> NSRect {
+        // On a notched MacBook the panel opens only while the pointer is on
+        // the physical notch itself: exactly its width, and no taller than
+        // the menu-bar strip it sits in. The wider region used elsewhere
+        // reached below the menu bar and opened the panel over window
+        // controls the user was trying to click.
+        if hasPhysicalNotch(on: screen),
+           let notchWidth = physicalNotchWidth(on: screen),
+           let notchHeight = notchReservedTopInset(on: screen) {
+            return NSRect(
+                x: screen.frame.midX - notchWidth / 2,
+                y: screen.frame.maxY - notchHeight,
+                width: notchWidth,
+                height: notchHeight
+            )
+        }
+
         let baseWidth = collapsedPanelWidth(for: screen) + 28
         let physicalNotchWidth = hasPhysicalNotch(on: screen)
             ? (physicalNotchWidth(on: screen) ?? 0)

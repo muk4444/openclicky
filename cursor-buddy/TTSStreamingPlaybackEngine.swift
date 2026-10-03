@@ -59,7 +59,7 @@ enum TTSStreamingPlaybackEngine {
         // session owner is responsible for keeping the engine running
         // for the full response; if it stopped, the response is over.
         guard engine.isRunning else { return 0 }
-        TTSPlaybackLevelTap.attachIfNeeded(to: engine)
+        TTSPlaybackLevelMonitor.shared.noteScheduled(samples, on: player, sampleRate: format.sampleRate)
         let playerID = ObjectIdentifier(player)
         PendingBufferTracker.shared.increment(playerID)
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in
@@ -114,7 +114,7 @@ enum TTSStreamingPlaybackEngine {
         }
 
         stopPlayerIfAttached(player)
-        TTSPlaybackLevelMonitor.shared.reset()
+        TTSPlaybackLevelMonitor.shared.reset(ifTracking: player)
     }
 
     nonisolated static func stopPlayerIfAttached(_ player: AVAudioPlayerNode) {
@@ -124,63 +124,116 @@ enum TTSStreamingPlaybackEngine {
 
 }
 
-/// Loudness of OpenClicky's spoken output, for UI meters such as the notch
+/// Loudness of OpenClicky's spoken output, for UI meters such as the cursor
 /// waveform. Values are roughly 0...1, in the same range the microphone
 /// power level uses.
+///
+/// The level is derived from the samples as they are scheduled and looked up
+/// by the player's playback position. It deliberately does not tap the audio
+/// output: the meter must never touch the signal path.
 @MainActor
 final class TTSPlaybackLevelMonitor: ObservableObject {
     static let shared = TTSPlaybackLevelMonitor()
 
     @Published private(set) var level: CGFloat = 0
 
-    /// Fast attack, slower release, so the bars follow speech without flicker.
-    func update(_ newLevel: CGFloat) {
-        level = newLevel > level ? newLevel : level * 0.8 + newLevel * 0.2
+    private struct Segment {
+        let startFrame: AVAudioFramePosition
+        let framesPerStep: Int
+        let levels: [CGFloat]
+
+        var endFrame: AVAudioFramePosition {
+            startFrame + AVAudioFramePosition(levels.count * framesPerStep)
+        }
     }
 
-    func reset() {
+    private static let stepsPerSecond: Double = 50
+    private static let refreshInterval: TimeInterval = 1.0 / 30.0
+
+    private weak var player: AVAudioPlayerNode?
+    private var segments: [Segment] = []
+    private var scheduledFrameCount: AVAudioFramePosition = 0
+    private var refreshTimer: Timer?
+
+    /// Records the loudness envelope of samples about to be played.
+    func noteScheduled(_ samples: [Int16], on player: AVAudioPlayerNode, sampleRate: Double) {
+        guard !samples.isEmpty, sampleRate > 0 else { return }
+        if self.player !== player {
+            self.player = player
+            segments.removeAll(keepingCapacity: true)
+            scheduledFrameCount = 0
+        }
+
+        let framesPerStep = max(1, Int(sampleRate / Self.stepsPerSecond))
+        var levels: [CGFloat] = []
+        levels.reserveCapacity(samples.count / framesPerStep + 1)
+        var index = 0
+        while index < samples.count {
+            let end = min(index + framesPerStep, samples.count)
+            var sumOfSquares: Float = 0
+            for sampleIndex in index..<end {
+                let value = Float(samples[sampleIndex]) / 32_768
+                sumOfSquares += value * value
+            }
+            let rootMeanSquare = (sumOfSquares / Float(end - index)).squareRoot()
+            levels.append(CGFloat(min(1, rootMeanSquare * 2)))
+            index = end
+        }
+
+        segments.append(Segment(startFrame: scheduledFrameCount, framesPerStep: framesPerStep, levels: levels))
+        scheduledFrameCount += AVAudioFramePosition(samples.count)
+        startRefreshTimerIfNeeded()
+    }
+
+    /// Clears the meter once `player` has finished. Ignored when a newer
+    /// player has already taken over.
+    func reset(ifTracking player: AVAudioPlayerNode) {
+        guard self.player === player else { return }
+        self.player = nil
+        segments.removeAll(keepingCapacity: true)
+        scheduledFrameCount = 0
+        refreshTimer?.invalidate()
+        refreshTimer = nil
         level = 0
     }
-}
 
-/// Installs one output tap per playback engine to feed
-/// `TTSPlaybackLevelMonitor`. Kept nonisolated because the tap block runs on
-/// an audio thread.
-nonisolated enum TTSPlaybackLevelTap {
-    nonisolated(unsafe) private static let tappedEngines = NSHashTable<AVAudioEngine>.weakObjects()
-    private static let lock = NSLock()
-
-    static func attachIfNeeded(to engine: AVAudioEngine) {
-        lock.lock()
-        let alreadyTapped = tappedEngines.contains(engine)
-        if !alreadyTapped {
-            tappedEngines.add(engine)
-        }
-        lock.unlock()
-        guard !alreadyTapped else { return }
-
-        let mixer = engine.mainMixerNode
-        let format = mixer.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else { return }
-        mixer.installTap(onBus: 0, bufferSize: 1_024, format: format) { buffer, _ in
-            let level = rootMeanSquareLevel(of: buffer)
-            Task { @MainActor in
-                TTSPlaybackLevelMonitor.shared.update(level)
+    private func startRefreshTimerIfNeeded() {
+        guard refreshTimer == nil else { return }
+        let timer = Timer(timeInterval: Self.refreshInterval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.refreshLevel()
             }
         }
+        refreshTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
-    private static func rootMeanSquareLevel(of buffer: AVAudioPCMBuffer) -> CGFloat {
-        guard let channel = buffer.floatChannelData?[0] else { return 0 }
-        let frameCount = Int(buffer.frameLength)
-        guard frameCount > 0 else { return 0 }
-        var sumOfSquares: Float = 0
-        for frame in 0..<frameCount {
-            let sample = channel[frame]
-            sumOfSquares += sample * sample
+    private func refreshLevel() {
+        guard let player,
+              player.engine != nil,
+              let nodeTime = player.lastRenderTime,
+              let playerTime = player.playerTime(forNodeTime: nodeTime) else {
+            apply(0)
+            return
         }
-        let rootMeanSquare = (sumOfSquares / Float(frameCount)).squareRoot()
-        return CGFloat(min(1, rootMeanSquare * 2))
+
+        let frame = playerTime.sampleTime
+        segments.removeAll { $0.endFrame <= frame }
+        guard let segment = segments.first, frame >= segment.startFrame else {
+            apply(0)
+            return
+        }
+        let stepIndex = Int(frame - segment.startFrame) / segment.framesPerStep
+        apply(stepIndex < segment.levels.count ? segment.levels[stepIndex] : 0)
+    }
+
+    /// Fast attack, slower release, so the bars follow speech without flicker.
+    private func apply(_ newLevel: CGFloat) {
+        let smoothed = newLevel > level ? newLevel : level * 0.8 + newLevel * 0.2
+        let nextLevel = smoothed < 0.001 ? 0 : smoothed
+        if nextLevel != level {
+            level = nextLevel
+        }
     }
 }
 
