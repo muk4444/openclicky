@@ -28,6 +28,9 @@ final class CompanionResponseOverlayViewModel: ObservableObject {
 final class CompanionResponseOverlayManager {
     private let overlayViewModel = CompanionResponseOverlayViewModel()
     private var overlayPanel: NSPanel?
+    /// The SwiftUI host inside the glass container. The container itself has
+    /// no intrinsic size, so content fitting must be measured on this view.
+    private var overlayHostingView: NSView?
     private var cursorTrackingTimer: Timer?
     private var lastCursorTrackingOrigin: NSPoint?
     private var autoHideWorkItem: DispatchWorkItem?
@@ -168,6 +171,7 @@ final class CompanionResponseOverlayManager {
         )
 
         overlayPanel = responseOverlayPanel
+        overlayHostingView = hostingView
     }
 
     private func startCursorTracking() {
@@ -238,7 +242,11 @@ final class CompanionResponseOverlayManager {
     private func resizePanelToFitContent() {
         guard let overlayPanel, let contentView = overlayPanel.contentView else { return }
 
-        let fittingSize = contentView.fittingSize
+        // Measure the SwiftUI host, not the glass container: the container is
+        // a plain autoresizing NSView whose fittingSize is zero, which shrank
+        // the panel to a tiny clipped square.
+        let fittingSize = (overlayHostingView ?? contentView).fittingSize
+        guard fittingSize.width > 1, fittingSize.height > 1 else { return }
         let newWidth = min(fittingSize.width, overlayMaxWidth)
         let newHeight = fittingSize.height
 

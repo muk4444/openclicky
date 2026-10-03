@@ -451,7 +451,13 @@ final class ClaudeAgentSDKAPI {
             .filter { !$0.isEmpty }
             .joined(separator: ":")
         environment["OPENCLICKY_CLAUDE_EXECUTABLE"] = executableURL.path
-        environment["OPENCLICKY_CLAUDE_MODEL"] = model
+        // The installed Claude Code CLI may not know OpenClicky's catalog aliases
+        // (e.g. "sonnet-5"), so hand it the family alias it does understand.
+        switch model {
+        case "sonnet-5": environment["OPENCLICKY_CLAUDE_MODEL"] = "sonnet"
+        case "opus-5": environment["OPENCLICKY_CLAUDE_MODEL"] = "opus"
+        default: environment["OPENCLICKY_CLAUDE_MODEL"] = model
+        }
         environment["OPENCLICKY_CLAUDE_MAX_OUTPUT_TOKENS"] = String(maxOutputTokens)
         environment["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = String(maxOutputTokens)
         environment["OPENCLICKY_CLAUDE_CWD"] = workingDirectory.path

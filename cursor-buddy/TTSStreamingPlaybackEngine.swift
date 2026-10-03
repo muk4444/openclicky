@@ -11,6 +11,7 @@
 
 import AVFoundation
 import Foundation
+import os
 
 @MainActor
 enum TTSStreamingPlaybackEngine {
@@ -57,7 +58,11 @@ enum TTSStreamingPlaybackEngine {
         // session owner is responsible for keeping the engine running
         // for the full response; if it stopped, the response is over.
         guard engine.isRunning else { return 0 }
-        player.scheduleBuffer(buffer, completionHandler: nil)
+        let playerID = ObjectIdentifier(player)
+        PendingBufferTracker.shared.increment(playerID)
+        player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in
+            PendingBufferTracker.shared.decrement(playerID)
+        }
         if startPlaybackIfNeeded && !player.isPlaying {
             player.play()
         }
@@ -74,18 +79,18 @@ enum TTSStreamingPlaybackEngine {
             return
         }
 
-        // AVAudioPlayerNode can keep reporting `isPlaying` after queued
-        // buffers are exhausted. Poll rendered frames, but do not stop
-        // merely because the rendered-frame value is temporarily nil or
-        // unchanged; that clipped Cartesia/Deepgram playback when their
-        // players were started before buffers were queued. The wall-clock
-        // deadline remains as a conservative stuck-device guard.
+        // Wait until every scheduled buffer has actually been played back.
+        // Comparing the player's rendered sample time against the scheduled
+        // frame count clipped the tail of streamed replies: sample time keeps
+        // advancing while the queue runs dry between late-arriving sentence
+        // fetches, so that silence was counted as played audio. The
+        // wall-clock deadline remains as a conservative stuck-device guard.
+        let playerID = ObjectIdentifier(player)
         let expectedDuration = Double(scheduledFrameCount) / sampleRate
         let deadline = Date().addingTimeInterval(max(expectedDuration + 3.0, 3.0))
 
         while !Task.isCancelled {
-            if let renderedFrame = renderedSampleTime(for: player),
-               renderedFrame >= scheduledFrameCount {
+            if PendingBufferTracker.shared.pendingCount(playerID) == 0 {
                 break
             }
 
@@ -104,12 +109,29 @@ enum TTSStreamingPlaybackEngine {
         player.stop()
     }
 
-    private static func renderedSampleTime(for player: AVAudioPlayerNode) -> AVAudioFramePosition? {
-        guard player.engine != nil,
-              let nodeTime = player.lastRenderTime,
-              let playerTime = player.playerTime(forNodeTime: nodeTime) else {
-            return nil
+}
+
+/// Counts buffers scheduled on each player that have not finished playing.
+/// Buffer completion handlers fire on an audio thread, so access is locked.
+/// An unfair lock is used because it donates priority to the holder, which
+/// avoids priority inversions when the main thread polls the count.
+nonisolated final class PendingBufferTracker: @unchecked Sendable {
+    static let shared = PendingBufferTracker()
+
+    private let counts = OSAllocatedUnfairLock(initialState: [ObjectIdentifier: Int]())
+
+    func increment(_ playerID: ObjectIdentifier) {
+        counts.withLock { $0[playerID, default: 0] += 1 }
+    }
+
+    func decrement(_ playerID: ObjectIdentifier) {
+        counts.withLock { state in
+            let remaining = (state[playerID] ?? 1) - 1
+            state[playerID] = remaining > 0 ? remaining : nil
         }
-        return playerTime.sampleTime
+    }
+
+    func pendingCount(_ playerID: ObjectIdentifier) -> Int {
+        counts.withLock { $0[playerID] ?? 0 }
     }
 }

@@ -2,7 +2,7 @@ import Foundation
 
 enum OpenClickyRuntimeMode {
     static var isOpenClickyBundle: Bool {
-        Bundle.main.bundleIdentifier == "com.jkneen.openclicky"
+        Bundle.main.bundleIdentifier == "com.nepomuk.openclicky"
     }
 
     static var isDevelopmentBuild: Bool {

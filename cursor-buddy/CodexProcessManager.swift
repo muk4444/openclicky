@@ -9,7 +9,7 @@ nonisolated final class CodexProcessManager: @unchecked Sendable {
     private var stderrBuffer = Data()
     private var nextRequestID = 1
     private var pending: [Int: CheckedContinuation<[String: Any], Error>] = [:]
-    private let stateQueue = DispatchQueue(label: "com.jkneen.openclicky.codex-process")
+    private let stateQueue = DispatchQueue(label: "com.nepomuk.openclicky.codex-process")
 
     var onNotification: (([String: Any]) -> Void)?
     var onStderrLine: ((String) -> Void)?

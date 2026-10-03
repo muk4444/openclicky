@@ -2332,11 +2332,12 @@ final class CompanionManager: ObservableObject {
         // re-prepares the cache.
         FillerPhraseLibrary.shared.prepare(client: voiceTTSClient)
 
-        // If the user already completed onboarding AND all permissions are
-        // still granted, show the cursor overlay immediately. If permissions
-        // were revoked (e.g. signing change), don't show the cursor — the
-        // panel will show the permissions UI instead.
-        if hasCompletedOnboarding && isClickyCursorEnabled {
+        // Show the cursor overlay immediately when the user wants it. The
+        // onboarding flag is not required: a build that never ran the old
+        // onboarding entry path would otherwise never show the cursor at
+        // launch. `showCursorOverlayIfAvailable` still refuses to show it
+        // without Accessibility, so the panel can present the permissions UI.
+        if isClickyCursorEnabled && (hasCompletedOnboarding || hasAccessibilityPermission) {
             showCursorOverlayIfAvailable()
         }
     }
@@ -3751,6 +3752,9 @@ final class CompanionManager: ObservableObject {
                 && !autoResumedRelaunchSessionIDs.contains(session.id)
         }
         guard !sessionsToResume.isEmpty else { return }
+        // Without a Codex runtime every resume fails immediately and announces
+        // the failure out loud on each launch. Leave the tasks parked instead.
+        guard !CodexRuntimeLocator.codexExecutableCandidates().isEmpty else { return }
 
         let ids = sessionsToResume.map(\.id)
         autoResumedRelaunchSessionIDs.formUnion(ids)
@@ -15557,12 +15561,7 @@ final class CompanionManager: ObservableObject {
     }
 
     func updateVoiceResponseCaption(_ text: String, force: Bool = false) {
-        // Interactive bubble always tracks spoken replies so the provider
-        // selector is reachable without opening Settings.
         let caption = Self.voiceResponseCaptionText(from: text)
-        if !caption.isEmpty {
-            presentInteractiveResponseBubble(with: caption)
-        }
 
         guard force || voiceResponseCaptionsEnabled else { return }
         guard !caption.isEmpty else { return }
@@ -15571,20 +15570,6 @@ final class CompanionManager: ObservableObject {
         showCursorOverlayIfAvailable()
         cursorOverlayState.externalPrimaryCaptionText = caption
         cursorOverlayState.externalPrimaryCaptionAccentHex = nil
-    }
-
-    /// Show/update the interactive provider bubble. Mid-stream updates cancel
-    /// any pending auto-hide; a fresh hold is scheduled after each update so
-    /// only inactivity (not an earlier chunk's timer) can dismiss it.
-    private func presentInteractiveResponseBubble(with caption: String) {
-        responseOverlayManager.bind(companion: self)
-        if !responseOverlayManager.isVisible {
-            responseOverlayManager.showOverlayAndBeginStreaming(clearText: true)
-        }
-        // updateStreamingText cancels any pending hide from prior chunks.
-        responseOverlayManager.updateStreamingText(caption)
-        // Reschedule hold from this latest chunk only (cancel-before-schedule).
-        responseOverlayManager.finishStreaming(holdSeconds: ResponseOverlayAutoHidePolicy.defaultHoldSeconds)
     }
 
     /// Clears the cursor-following caption only. Does NOT dismiss the interactive

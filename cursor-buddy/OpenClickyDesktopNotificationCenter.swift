@@ -14,7 +14,7 @@ final class OpenClickyDesktopNotificationCenter: NSObject, UNUserNotificationCen
     static let shared = OpenClickyDesktopNotificationCenter()
 
     private let center = UNUserNotificationCenter.current()
-    private let logQueue = DispatchQueue(label: "com.jkneen.openclicky.desktop-notifications")
+    private let logQueue = DispatchQueue(label: "com.nepomuk.openclicky.desktop-notifications")
 
     private override init() {
         super.init()

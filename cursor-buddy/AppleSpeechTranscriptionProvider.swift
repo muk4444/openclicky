@@ -42,7 +42,11 @@ final class AppleSpeechTranscriptionProvider: BuddyTranscriptionProvider {
     }
 
     private static func makeBestAvailableSpeechRecognizer() -> SFSpeechRecognizer? {
-        let preferredLocales = [
+        // Prefer the user's system languages. `Locale.autoupdatingCurrent`
+        // takes its language from the app bundle's localizations, so an
+        // English-only build reports e.g. "en_DE" on a German Mac and would
+        // transcribe German speech as English.
+        let preferredLocales = Locale.preferredLanguages.map { Locale(identifier: $0) } + [
             Locale.autoupdatingCurrent,
             Locale(identifier: "en-US")
         ]

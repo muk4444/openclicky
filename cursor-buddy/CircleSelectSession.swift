@@ -427,9 +427,11 @@ final class CircleSelectSession {
         attemptSnap(reason: "mouse_up")
     }
 
-    /// CGEvent.location is Quartz global (bottom-left origin) — same space as NSEvent.mouseLocation.
+    /// CGEvent.location is Quartz global with a top-left origin, so it is
+    /// vertically mirrored relative to NSEvent.mouseLocation. The unflipped
+    /// variant is the bottom-left AppKit space the overlay and capture expect.
     private nonisolated static func appKitLocation(from event: CGEvent) -> CGPoint {
-        event.location
+        event.unflippedLocation
     }
 
     private func append(point: CGPoint, force: Bool) {

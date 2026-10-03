@@ -922,6 +922,14 @@ struct BlueCursorView: View {
             }
             startNavigatingToCurrentDetectedLocationIfNeeded()
         }
+        .onChange(of: cursorState.detectedElementDisplayFrame) { _, newFrame in
+            // The location and its display frame reach the overlay state in
+            // separate main-queue hops. If the location lands first, the
+            // handler above finds no frame and gives up, so the flight never
+            // starts. Retry once the frame arrives.
+            guard newFrame != nil, buddyNavigationMode == .followingCursor else { return }
+            startNavigatingToCurrentDetectedLocationIfNeeded()
+        }
     }
 
     private func startNavigatingToCurrentDetectedLocationIfNeeded() {
@@ -950,8 +958,13 @@ struct BlueCursorView: View {
         switch buddyNavigationMode {
         case .followingCursor:
             // If another screen's BlueCursorView is navigating to an element,
-            // hide the cursor on this screen to prevent a duplicate buddy
-            if cursorState.detectedElementScreenLocation != nil {
+            // hide the cursor on this screen to prevent a duplicate buddy.
+            // Only hide when the target really is on another screen: if it is
+            // on this one and this view is not (or no longer) flying to it,
+            // hiding would make the buddy vanish until the target is cleared.
+            if let targetLocation = cursorState.detectedElementScreenLocation,
+               let targetDisplayFrame = cursorState.detectedElementDisplayFrame,
+               !(targetDisplayFrame.intersects(screenFrame) || screenFrame.contains(targetLocation)) {
                 return false
             }
             return isCursorOnThisScreen
@@ -1061,10 +1074,6 @@ struct BlueCursorView: View {
                 visualGuidanceRectangle(overlay, color: color)
             }
 
-            if let caption = overlay.style.caption?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !caption.isEmpty {
-                externalCaption(caption, at: captionAnchor(for: overlay), color: color)
-            }
         }
         .transition(accessibilityReduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.98)))
         .animation(accessibilityReduceMotion ? nil : .easeOut(duration: 0.18), value: overlay.id)
@@ -1098,12 +1107,6 @@ struct BlueCursorView: View {
             .position(x: localRect.midX, y: localRect.midY)
             .allowsHitTesting(false)
         }
-    }
-
-    private func captionAnchor(for overlay: OpenClickyVisualGuidanceOverlay) -> CGPoint {
-        let bounds = overlay.screenBounds
-        guard !bounds.isNull else { return cursorPosition }
-        return convertScreenPointToSwiftUICoordinates(CGPoint(x: bounds.midX, y: bounds.maxY))
     }
 
     private func convertScreenRectToSwiftUICoordinates(_ rect: CGRect) -> CGRect {
