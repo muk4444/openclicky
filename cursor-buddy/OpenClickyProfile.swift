@@ -125,6 +125,8 @@ nonisolated enum OpenClickyProfileCatalog {
             return AppBundleConfiguration.userOpenAIRealtimeVoiceIDDefaultsKey
         case .microsoftEdge:
             return AppBundleConfiguration.userMicrosoftEdgeVoiceIDDefaultsKey
+        case .mistral:
+            return AppBundleConfiguration.userMistralVoiceIDDefaultsKey
         case .deepgram:
             return AppBundleConfiguration.userDeepgramTTSVoiceDefaultsKey
         case .none:

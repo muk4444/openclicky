@@ -14,6 +14,8 @@ nonisolated enum AppBundleConfiguration {
     static let userElevenLabsVoiceIDDefaultsKey = "openClickyElevenLabsVoiceID"
     static let userCartesiaAPIKeyDefaultsKey = "openClickyCartesiaAPIKey"
     static let userCartesiaVoiceIDDefaultsKey = "openClickyCartesiaVoiceID"
+    static let userMistralAPIKeyDefaultsKey = "openClickyMistralAPIKey"
+    static let userMistralVoiceIDDefaultsKey = "openClickyMistralVoiceID"
     static let userOpenAIRealtimeVoiceIDDefaultsKey = "openClickyOpenAIRealtimeVoiceID"
     static let userMicrosoftEdgeVoiceIDDefaultsKey = "openClickyMicrosoftEdgeVoiceID"
     /// Deepgram TTS reuses the existing Deepgram STT API key
@@ -301,8 +303,25 @@ nonisolated enum AppBundleConfiguration {
         ?? "cedar"
     }
 
+    static func mistralAPIKey() -> String? {
+        userDefaultsValue(forKey: userMistralAPIKeyDefaultsKey) ?? stringValue(
+            forKey: "MistralAPIKey",
+            environmentKeys: ["MISTRAL_API_KEY"]
+        ) ?? localDevelopmentEnvironmentValue(forKey: "MISTRAL_API_KEY")
+    }
+
+    /// Mistral Voxtral voice ID. There is no default: the user picks one of
+    /// their own or a preset voice in Settings → Advanced Providers.
+    static func mistralVoiceID() -> String {
+        userDefaultsValue(forKey: userMistralVoiceIDDefaultsKey) ?? stringValue(
+            forKey: "MistralVoiceID",
+            environmentKeys: ["MISTRAL_VOICE_ID"]
+        ) ?? localDevelopmentEnvironmentValue(forKey: "MISTRAL_VOICE_ID")
+        ?? ""
+    }
+
     /// Selected playback engine — "openai_realtime" (default), "elevenlabs",
-    /// "cartesia", "deepgram", or "microsoft_edge".
+    /// "cartesia", "deepgram", "microsoft_edge", or "mistral".
     static func ttsProviderRaw() -> String {
         userDefaultsValue(forKey: userTTSProviderDefaultsKey) ?? "openai_realtime"
     }
@@ -435,6 +454,7 @@ nonisolated enum AppBundleConfiguration {
         userAnthropicAPIKeyDefaultsKey,
         userElevenLabsAPIKeyDefaultsKey,
         userCartesiaAPIKeyDefaultsKey,
+        userMistralAPIKeyDefaultsKey,
         userCodexAgentAPIKeyDefaultsKey,
         userAssemblyAIAPIKeyDefaultsKey,
         userDeepgramAPIKeyDefaultsKey,

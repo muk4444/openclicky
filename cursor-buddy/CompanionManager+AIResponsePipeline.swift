@@ -1344,7 +1344,7 @@ extension CompanionManager {
         // cached opener only when the user has asked a real multi-word
         // question or investigation. Short acknowledgements stay crisp.
         switch ttsProvider {
-        case .cartesia, .elevenLabs, .microsoftEdge, .deepgram:
+        case .cartesia, .elevenLabs, .microsoftEdge, .deepgram, .mistral:
             return wordCount >= 6
         case .openAIRealtime:
             return false
@@ -1901,7 +1901,7 @@ extension CompanionManager {
             return fields
         }
 
-        if nsError.domain == "ElevenLabsTTS" || nsError.domain == "CartesiaTTS" {
+        if nsError.domain == "ElevenLabsTTS" || nsError.domain == "CartesiaTTS" || nsError.domain == "MistralTTS" {
             fields["ttsFailureKind"] = "playback_failure"
         }
         return fields

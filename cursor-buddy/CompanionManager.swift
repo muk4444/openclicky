@@ -823,6 +823,13 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    private lazy var mistralTTSClient: MistralTTSClient = {
+        return MistralTTSClient(
+            apiKey: AppBundleConfiguration.mistralAPIKey(),
+            voiceID: AppBundleConfiguration.mistralVoiceID()
+        )
+    }()
+
     private lazy var microsoftEdgeTTSClient: MicrosoftEdgeTTSClient = {
         return MicrosoftEdgeTTSClient(
             voiceID: AppBundleConfiguration.microsoftEdgeVoiceID()
@@ -879,6 +886,7 @@ final class CompanionManager: ObservableObject {
         case .cartesia:   return cartesiaTTSClient
         case .deepgram:   return activeDeepgramTTSClient
         case .microsoftEdge: return microsoftEdgeTTSClient
+        case .mistral: return mistralTTSClient
         }
     }
 
@@ -892,6 +900,7 @@ final class CompanionManager: ObservableObject {
         case .cartesia:   return "CartesiaTTSClient"
         case .deepgram:   return "DeepgramTTSClient"
         case .microsoftEdge: return "MicrosoftEdgeTTSClient"
+        case .mistral: return "MistralTTSClient"
         }
     }
 
@@ -902,6 +911,7 @@ final class CompanionManager: ObservableObject {
         case .cartesia:   return "CartesiaTTSClient.speakText"
         case .deepgram:   return "DeepgramTTSClient.speakText"
         case .microsoftEdge: return "MicrosoftEdgeTTSClient.speakText"
+        case .mistral: return "MistralTTSClient.speakText"
         }
     }
 
@@ -912,6 +922,7 @@ final class CompanionManager: ObservableObject {
         case .cartesia:   return "CartesiaTTSClient.beginStreamingResponse"
         case .deepgram:   return "DeepgramTTSClient.beginStreamingResponse"
         case .microsoftEdge: return "MicrosoftEdgeTTSClient.beginStreamingResponse"
+        case .mistral: return "MistralTTSClient.beginStreamingResponse"
         }
     }
 
@@ -944,6 +955,33 @@ final class CompanionManager: ObservableObject {
         )
         if selectedTTSProvider == .microsoftEdge {
             FillerPhraseLibrary.shared.prepare(client: microsoftEdgeTTSClient)
+        }
+    }
+
+    func setMistralAPIKey(_ apiKey: String) {
+        persistOptionalSecret(apiKey, defaultsKey: AppBundleConfiguration.userMistralAPIKeyDefaultsKey)
+        mistralTTSClient.updateConfiguration(
+            apiKey: AppBundleConfiguration.mistralAPIKey(),
+            voiceID: AppBundleConfiguration.mistralVoiceID()
+        )
+        if selectedTTSProvider == .mistral {
+            FillerPhraseLibrary.shared.prepare(client: mistralTTSClient)
+        }
+    }
+
+    func setMistralVoiceID(_ voiceID: String) {
+        let trimmed = voiceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            UserDefaults.standard.removeObject(forKey: AppBundleConfiguration.userMistralVoiceIDDefaultsKey)
+        } else {
+            UserDefaults.standard.set(trimmed, forKey: AppBundleConfiguration.userMistralVoiceIDDefaultsKey)
+        }
+        mistralTTSClient.updateConfiguration(
+            apiKey: AppBundleConfiguration.mistralAPIKey(),
+            voiceID: AppBundleConfiguration.mistralVoiceID()
+        )
+        if selectedTTSProvider == .mistral {
+            FillerPhraseLibrary.shared.prepare(client: mistralTTSClient)
         }
     }
 
@@ -2640,6 +2678,8 @@ final class CompanionManager: ObservableObject {
         cursorOverlayState.externalSecondaryCursors.removeAll { $0.id == id }
     }
 
+    private static let visualGuidanceOverlayDisplaySeconds: TimeInterval = 3
+
     func showVisualGuidanceOverlay(
         _ overlay: OpenClickyVisualGuidanceOverlay,
         sourceCapture: CompanionScreenCapture? = nil
@@ -2648,11 +2688,9 @@ final class CompanionManager: ObservableObject {
             partial.union(screen.frame)
         }
         var clampedOverlay = overlay.clamped(to: desktopBounds)
-        if clampedOverlay.kind == .rectangle {
-            clampedOverlay.duration = max(clampedOverlay.duration, 30)
-        } else {
-            clampedOverlay.duration = max(clampedOverlay.duration, 20)
-        }
+        // Highlights are a brief pointer, not a lasting annotation: show them
+        // for a few seconds instead of keeping them up for the whole reply.
+        clampedOverlay.duration = Self.visualGuidanceOverlayDisplaySeconds
         if let calibrationAnchor = Self.pendingCalibrationAnchor(from: clampedOverlay, sourceCapture: sourceCapture) {
             clampedOverlay.duration = max(clampedOverlay.duration, 120)
             clampedOverlay.style.accentHex = "#34D399"

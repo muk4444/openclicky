@@ -199,6 +199,11 @@ struct OpenClickySettingsView: View {
     @AppStorage(AppBundleConfiguration.userElevenLabsVoiceIDDefaultsKey) private var userElevenLabsVoiceID = ""
     @State private var userCartesiaAPIKey = ""
     @AppStorage(AppBundleConfiguration.userCartesiaVoiceIDDefaultsKey) private var userCartesiaVoiceID = ""
+    @State private var userMistralAPIKey = ""
+    @AppStorage(AppBundleConfiguration.userMistralVoiceIDDefaultsKey) private var userMistralVoiceID = ""
+    @State private var mistralVoices: [MistralVoiceOption] = []
+    @State private var isLoadingMistralVoices = false
+    @State private var mistralVoicesErrorMessage: String?
     @AppStorage(AppBundleConfiguration.userOpenAIRealtimeVoiceIDDefaultsKey) private var userOpenAIRealtimeVoiceID = "cedar"
     @AppStorage(AppBundleConfiguration.userMicrosoftEdgeVoiceIDDefaultsKey) private var userMicrosoftEdgeVoiceID = "en-US-EmmaMultilingualNeural"
     @AppStorage(AppBundleConfiguration.userDeepgramTTSVoiceDefaultsKey) private var userDeepgramTTSVoice = "aura-2-thalia-en"
@@ -380,6 +385,7 @@ struct OpenClickySettingsView: View {
         userDeepgramAPIKey = AppBundleConfiguration.deepgramAPIKey() ?? ""
         userElevenLabsAPIKey = AppBundleConfiguration.elevenLabsAPIKey() ?? ""
         userCartesiaAPIKey = AppBundleConfiguration.cartesiaAPIKey() ?? ""
+        userMistralAPIKey = AppBundleConfiguration.mistralAPIKey() ?? ""
         codexAgentBaseURL = UserDefaults.standard.string(forKey: "clickyAgentBaseURL") ?? ""
     }
 
@@ -939,7 +945,10 @@ struct OpenClickySettingsView: View {
             && (companionManager.activeProfile.id == OpenClickyProfileCatalog.local.id
                 || companionManager.buddyDictationManager.transcriptionProviderID == BuddyTranscriptionProviderID.parakeet.rawValue
                 || companionManager.buddyDictationManager.transcriptionProviderID == BuddyTranscriptionProviderID.appleSpeech.rawValue)
-            && companionManager.selectedTTSProvider == .microsoftEdge
+            // Mistral playback keeps the local listening controls: only the
+            // spoken reply goes to the cloud, listening stays on device.
+            && (companionManager.selectedTTSProvider == .microsoftEdge
+                || companionManager.selectedTTSProvider == .mistral)
     }
 
     private var shouldShowLocalListeningControls: Bool {
@@ -971,7 +980,7 @@ struct OpenClickySettingsView: View {
 
     private var visiblePlaybackProviders: [OpenClickyTTSProvider] {
         if isLocalVoiceRoute {
-            return [.microsoftEdge]
+            return [.microsoftEdge, .mistral]
         }
         return OpenClickyTTSProvider.allCases.filter { $0 != .openAIRealtime }
     }
@@ -1123,9 +1132,9 @@ struct OpenClickySettingsView: View {
             }
 
             if shouldShowPlaybackProviderControls {
-                settingsGroup(isLocalVoiceRoute ? "Local playback" : "Playback") {
+                settingsGroup("Playback") {
                     Text(isLocalVoiceRoute
-                        ? "Local profile keeps remote playback providers hidden. Microsoft Edge voice is the lightweight default."
+                        ? "Local listening stays on this Mac. Choose Microsoft Edge for free playback or Mistral for your own Voxtral voices."
                         : "Choose the separate TTS provider used when a normal text model generates OpenClicky's reply.")
                         .font(appUIFont(size: subtextFontSize, weight: .regular))
                         .foregroundColor(.secondary)
@@ -1187,6 +1196,18 @@ struct OpenClickySettingsView: View {
                             set: { userDeepgramTTSVoice = $0; companionManager.setDeepgramTTSVoice($0) }
                         )
                     )
+                case .mistral:
+                    secureFieldRow(
+                        title: "Mistral API key",
+                        subtitle: "Used for spoken OpenClicky replies with Mistral Voxtral.",
+                        systemImageName: "key",
+                        placeholder: "Mistral key",
+                        text: Binding(
+                            get: { userMistralAPIKey },
+                            set: { userMistralAPIKey = $0; companionManager.setMistralAPIKey($0) }
+                        )
+                    )
+                    mistralVoiceControls
                 case .microsoftEdge:
                     Text("Microsoft Edge voices are the free online Read Aloud voices and do not need an API key.")
                         .font(.subheadline)
@@ -1285,6 +1306,76 @@ struct OpenClickySettingsView: View {
         .pickerStyle(.menu)
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
+    }
+
+    @ViewBuilder
+    private var mistralVoiceControls: some View {
+        actionRow(
+            title: isLoadingMistralVoices ? "Loading voices…" : "Load voices from Mistral",
+            systemImageName: "arrow.clockwise"
+        ) {
+            loadMistralVoices()
+        }
+        .disabled(isLoadingMistralVoices)
+        .onAppear {
+            if mistralVoices.isEmpty {
+                loadMistralVoices()
+            }
+        }
+
+        if let mistralVoicesErrorMessage {
+            warningRow(title: "Could not load Mistral voices", subtitle: mistralVoicesErrorMessage)
+        }
+
+        if !mistralVoices.isEmpty {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 2), spacing: 8) {
+                ForEach(mistralVoices) { voice in
+                    optionButton(
+                        title: voice.name,
+                        subtitle: voice.subtitle,
+                        isSelected: userMistralVoiceID == voice.id,
+                        action: {
+                            userMistralVoiceID = voice.id
+                            companionManager.setMistralVoiceID(voice.id)
+                        }
+                    )
+                }
+            }
+            .padding(.horizontal, 4)
+        }
+
+        textFieldRow(
+            title: "Mistral voice ID",
+            subtitle: "Filled in when you pick a voice above. You can also paste a voice ID from Mistral Studio.",
+            systemImageName: "person.wave.2",
+            placeholder: "Voice ID",
+            text: Binding(
+                get: { userMistralVoiceID },
+                set: { userMistralVoiceID = $0; companionManager.setMistralVoiceID($0) }
+            )
+        )
+    }
+
+    private func loadMistralVoices() {
+        let apiKey = userMistralAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !apiKey.isEmpty else {
+            mistralVoicesErrorMessage = "Enter your Mistral API key first."
+            return
+        }
+        guard !isLoadingMistralVoices else { return }
+        isLoadingMistralVoices = true
+        mistralVoicesErrorMessage = nil
+        Task { @MainActor in
+            do {
+                mistralVoices = try await MistralTTSClient.fetchVoices(apiKey: apiKey)
+                if mistralVoices.isEmpty {
+                    mistralVoicesErrorMessage = "Mistral returned no voices for this key."
+                }
+            } catch {
+                mistralVoicesErrorMessage = error.localizedDescription
+            }
+            isLoadingMistralVoices = false
+        }
     }
 
     private var advancedProvidersPanel: some View {

@@ -1010,16 +1010,47 @@ final class StreamingTTSSession {
 final class FillerPhraseLibrary {
     static let shared = FillerPhraseLibrary()
 
+    /// The filler phrases for one language, addressed by role so the
+    /// contextual picker works the same way in every language.
+    struct PhraseSet {
+        let oneMoment: String
+        let giveMeASecond: String
+        let checkingNow: String
+        let letMeCheck: String
+        let workingOnThat: String
+
+        var all: [String] {
+            [oneMoment, giveMeASecond, checkingNow, letMeCheck, workingOnThat]
+        }
+
+        static let english = PhraseSet(
+            oneMoment: "one moment.",
+            giveMeASecond: "give me a second.",
+            checkingNow: "checking now.",
+            letMeCheck: "let me check.",
+            workingOnThat: "working on that."
+        )
+
+        static let german = PhraseSet(
+            oneMoment: "Einen Moment.",
+            giveMeASecond: "Gib mir eine Sekunde.",
+            checkingNow: "Ich schaue nach.",
+            letMeCheck: "Lass mich kurz schauen.",
+            workingOnThat: "Ich bin dran."
+        )
+
+        /// Fillers follow the user's system language, the same source the
+        /// Apple Speech recognizer uses, so they match the spoken reply.
+        static let active: PhraseSet = {
+            let language = Locale.preferredLanguages.first?.lowercased() ?? ""
+            return language.hasPrefix("de") ? german : english
+        }()
+    }
+
     /// Default fillers — short, natural delay-cover phrases. These are
     /// pre-rendered because generating an opener on the critical path
     /// would add exactly the latency the filler is meant to hide.
-    static let defaultPhrases: [String] = [
-        "one moment.",
-        "give me a second.",
-        "checking now.",
-        "let me check.",
-        "working on that."
-    ]
+    static let defaultPhrases: [String] = PhraseSet.active.all
 
     private var samplesByPhrase: [String: [Int16]] = [:]
     private var phrases: [String] = FillerPhraseLibrary.defaultPhrases
@@ -1100,12 +1131,17 @@ final class FillerPhraseLibrary {
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
             .lowercased()
 
+        let set = PhraseSet.active
         let preferred: [String]
-        if screenContextNeeded || normalized.contains("look at") || normalized.contains("take a look") {
+        if screenContextNeeded
+            || normalized.contains("look at")
+            || normalized.contains("take a look")
+            || normalized.contains("schau")
+            || normalized.contains("zeig") {
             preferred = [
-                "checking now.",
-                "let me check.",
-                "give me a second."
+                set.checkingNow,
+                set.letMeCheck,
+                set.giveMeASecond
             ]
         } else if normalized.contains("do we")
                     || normalized.contains("should we")
@@ -1114,24 +1150,26 @@ final class FillerPhraseLibrary {
                     || normalized.contains("what i'm interested")
                     || normalized.contains("what i’m interested") {
             preferred = [
-                "give me a second.",
-                "working on that.",
-                "let me check."
+                set.giveMeASecond,
+                set.workingOnThat,
+                set.letMeCheck
             ]
         } else if normalized.contains("check")
                     || normalized.contains("find")
                     || normalized.contains("search")
                     || normalized.contains("research")
-                    || normalized.contains("look into") {
+                    || normalized.contains("look into")
+                    || normalized.contains("pruf")
+                    || normalized.contains("such") {
             preferred = [
-                "checking now.",
-                "let me check.",
-                "give me a second."
+                set.checkingNow,
+                set.letMeCheck,
+                set.giveMeASecond
             ]
         } else {
             preferred = [
-                "give me a second.",
-                "one moment."
+                set.giveMeASecond,
+                set.oneMoment
             ]
         }
 
@@ -1794,6 +1832,7 @@ nonisolated enum OpenClickyTTSProvider: String, CaseIterable, Identifiable {
     case cartesia = "cartesia"
     case deepgram = "deepgram"
     case microsoftEdge = "microsoft_edge"
+    case mistral = "mistral"
     var id: String { rawValue }
     var displayName: String {
         switch self {
@@ -1802,6 +1841,7 @@ nonisolated enum OpenClickyTTSProvider: String, CaseIterable, Identifiable {
         case .cartesia: return "Cartesia"
         case .deepgram: return "Deepgram Aura"
         case .microsoftEdge: return "Microsoft Edge"
+        case .mistral: return "Mistral"
         }
     }
     static func resolve(_ raw: String?) -> OpenClickyTTSProvider {
