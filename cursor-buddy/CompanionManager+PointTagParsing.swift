@@ -66,9 +66,75 @@ extension CompanionManager {
         return trimmedPrefill + " " + continuation
     }
 
-    /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of Claude's response.
-    /// Returns the spoken text (tag removed) and the optional coordinate + label + screen number.
+    /// A complete visual-guidance tag found anywhere in a response.
+    struct InlineVisualGuidanceTag {
+        /// The tag exactly as written, e.g. `[POINT:412,233:save button]`.
+        let text: String
+        /// Number of characters of spoken text that precede the tag.
+        let spokenOffset: Int
+        /// False for `[POINT:none]`, which carries no target.
+        let isActionable: Bool
+    }
+
+    /// Removes every complete `[POINT:]`, `[RECT:]` and `[SCRIBBLE:]` tag from
+    /// `text` and reports where each one sat. The spoken text is otherwise
+    /// left untouched (no trimming or collapsing), so a streamed response
+    /// always extends the text extracted from its earlier, shorter state.
+    static func extractInlineVisualGuidanceTags(from text: String) -> (spokenText: String, tags: [InlineVisualGuidanceTag]) {
+        let pattern = #"\[(?:POINT|RECT|SCRIBBLE):[^\]\[]*\]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return (text, [])
+        }
+        let matches = regex.matches(in: text, range: NSRange(text.startIndex..., in: text))
+        guard !matches.isEmpty else { return (text, []) }
+
+        var spokenText = ""
+        var tags: [InlineVisualGuidanceTag] = []
+        var cursor = text.startIndex
+        for match in matches {
+            guard let range = Range(match.range, in: text) else { continue }
+            spokenText += text[cursor..<range.lowerBound]
+            let tagText = String(text[range])
+            tags.append(
+                InlineVisualGuidanceTag(
+                    text: tagText,
+                    spokenOffset: spokenText.count,
+                    isActionable: tagText.uppercased() != "[POINT:NONE]"
+                )
+            )
+            cursor = range.upperBound
+        }
+        spokenText += text[cursor...]
+        return (spokenText, tags)
+    }
+
+    /// Parses the visual-guidance tags in Claude's response. A response may
+    /// carry several tags inline, one after each sentence it belongs to; the
+    /// spoken text has all of them removed and the returned target is the
+    /// last actionable one. A single trailing tag behaves as it always did.
     static func parsePointingCoordinates(from responseText: String) -> PointingParseResult {
+        let extraction = extractInlineVisualGuidanceTags(from: responseText)
+        guard !extraction.tags.isEmpty else {
+            return parseTrailingVisualGuidanceTag(from: responseText)
+        }
+
+        let spokenText = extraction.spokenText
+            .replacingOccurrences(of: #" {2,}"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let preferredTag = extraction.tags.last(where: { $0.isActionable }) ?? extraction.tags[extraction.tags.count - 1]
+        let parsedTag = parseTrailingVisualGuidanceTag(from: preferredTag.text)
+        return PointingParseResult(
+            spokenText: spokenText,
+            coordinate: parsedTag.coordinate,
+            elementLabel: parsedTag.elementLabel,
+            screenNumber: parsedTag.screenNumber,
+            visualOverlay: parsedTag.visualOverlay
+        )
+    }
+
+    /// Parses a [POINT:x,y:label:screenN] or [POINT:none] tag from the end of the given text.
+    /// Returns the spoken text (tag removed) and the optional coordinate + label + screen number.
+    static func parseTrailingVisualGuidanceTag(from responseText: String) -> PointingParseResult {
         if let rectangleResult = parseRectangleGuidance(from: responseText) {
             return rectangleResult
         }

@@ -448,13 +448,15 @@ final class ElevenLabsTTSClient {
         _ samples: [Int16],
         on player: AVAudioPlayerNode,
         format: AVAudioFormat,
-        startPlaybackIfNeeded: Bool = true
+        startPlaybackIfNeeded: Bool = true,
+        onPlayedBack: (@Sendable () -> Void)? = nil
     ) -> AVAudioFramePosition {
         TTSStreamingPlaybackEngine.scheduleSamples(
             samples,
             on: player,
             format: format,
-            startPlaybackIfNeeded: startPlaybackIfNeeded
+            startPlaybackIfNeeded: startPlaybackIfNeeded,
+            onPlayedBack: onPlayedBack
         )
     }
 
@@ -538,6 +540,22 @@ final class StreamingTTSSession {
     private var scheduledSpeechChunkCount = 0
     private(set) var isCancelled = false
     private var sentenceCount = 0
+
+    // Playback cues: callbacks that fire when a given sentence starts to be
+    // heard, used to move the cursor in step with the spoken reply.
+    //
+    // Buffers play back in the order they were scheduled, so sentence N is
+    // audible once every buffer scheduled before it has finished. Timing off
+    // those completions (rather than the player's sample clock) stays correct
+    // when the queue runs dry while a later sentence is still being fetched.
+    private var cuesBySentence: [Int: [@MainActor () -> Void]] = [:]
+    /// Number of buffers that must have finished before a sentence is heard.
+    private var startOrdinalBySentence: [Int: Int] = [:]
+    private var scheduledBufferCount = 0
+    private var completedBufferCount = 0
+    /// First sentence enqueued since the previous cue. A cue belongs to the
+    /// whole stretch of speech that leads up to its tag.
+    private var firstSentenceIndexOfCurrentSpan: Int?
     /// Sentence fetches run in parallel but can finish unevenly. Starting
     /// after only the first chunk lets AVAudioPlayerNode run dry before the
     /// next network response arrives, which sounds like words are skipping.
@@ -615,6 +633,61 @@ final class StreamingTTSSession {
                 scheduledFrameCount: scheduledFrameCount,
                 sampleRate: sampleRate
             )
+        }
+        // Whatever could not be tied to audio (no engine, dropped sentences)
+        // still happens, just without the timing.
+        fireRemainingCues()
+    }
+
+    /// Runs `cue` when the stretch of speech leading up to this point starts
+    /// to be heard. Call it right after appending the text the cue refers to.
+    func attachCueToCurrentSpan(_ cue: @escaping @MainActor () -> Void) {
+        guard !isCancelled else { return }
+        // The tag closes the sentence it follows, even without punctuation.
+        let remaining = pendingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if remaining.count >= 2 {
+            pendingText = ""
+            enqueueSentence(remaining)
+        }
+        let anchorSentenceIndex = firstSentenceIndexOfCurrentSpan ?? sentenceCount
+        firstSentenceIndexOfCurrentSpan = nil
+        cuesBySentence[anchorSentenceIndex, default: []].append(cue)
+        fireDueCues()
+    }
+
+    private func noteBufferPlayedBack() {
+        completedBufferCount += 1
+        fireDueCues()
+    }
+
+    /// A sentence that produced no audio starts "playing" at the point where
+    /// it would have been scheduled, so its cues are not lost.
+    private func noteSentenceSkipped(_ sentenceIndex: Int) {
+        if startOrdinalBySentence[sentenceIndex] == nil {
+            startOrdinalBySentence[sentenceIndex] = scheduledBufferCount
+        }
+        fireDueCues()
+    }
+
+    private func fireDueCues() {
+        guard !isCancelled, !cuesBySentence.isEmpty else { return }
+        let playbackHasStarted = didFireStartCallback || (playerNode?.isPlaying ?? false)
+        guard playbackHasStarted else { return }
+
+        for sentenceIndex in cuesBySentence.keys.sorted() {
+            // Index 0 means the cue arrived before any sentence: fire at once.
+            let startOrdinal = sentenceIndex == 0 ? 0 : startOrdinalBySentence[sentenceIndex]
+            guard let startOrdinal, completedBufferCount >= startOrdinal else { continue }
+            let cues = cuesBySentence.removeValue(forKey: sentenceIndex) ?? []
+            cues.forEach { $0() }
+        }
+    }
+
+    private func fireRemainingCues() {
+        guard !isCancelled else { return }
+        for sentenceIndex in cuesBySentence.keys.sorted() {
+            let cues = cuesBySentence.removeValue(forKey: sentenceIndex) ?? []
+            cues.forEach { $0() }
         }
     }
 
@@ -881,14 +954,23 @@ final class StreamingTTSSession {
 
             await MainActor.run {
                 guard !self.isCancelled, player.engine != nil else { return }
-                let frames = ElevenLabsTTSClient.scheduleSamples(samples, on: player, format: streamFormat)
+                let frames = ElevenLabsTTSClient.scheduleSamples(
+                    samples,
+                    on: player,
+                    format: streamFormat,
+                    onPlayedBack: { [weak self] in
+                        Task { @MainActor [weak self] in self?.noteBufferPlayedBack() }
+                    }
+                )
                 if frames > 0 {
                     self.scheduledFrameCount += frames
+                    self.scheduledBufferCount += 1
                 }
                 if frames > 0 && !self.didFireStartCallback {
                     self.didFireStartCallback = true
                     self.onPlaybackStarted()
                 }
+                self.fireDueCues()
             }
         }
     }
@@ -900,6 +982,9 @@ final class StreamingTTSSession {
 
         sentenceCount += 1
         let sentenceIndex = sentenceCount
+        if firstSentenceIndexOfCurrentSpan == nil {
+            firstSentenceIndexOfCurrentSpan = sentenceIndex
+        }
 
         // Fetch immediately — runs in parallel with previous sentences'
         // fetches/playback. The fetch closure is provider-agnostic.
@@ -930,11 +1015,15 @@ final class StreamingTTSSession {
                 // Drop this sentence — never play a system-voice
                 // fallback. The next sentence keeps the response moving.
                 print("⚠️ Sentence \(sentenceIndex) TTS fetch failed; skipping: \(error)")
+                await MainActor.run { self.noteSentenceSkipped(sentenceIndex) }
                 return
             }
 
             try Task.checkCancellation()
-            guard !samples.isEmpty else { return }
+            guard !samples.isEmpty else {
+                await MainActor.run { self.noteSentenceSkipped(sentenceIndex) }
+                return
+            }
 
             // Truncation detection: if the decoded PCM is suspiciously
             // short for the text we sent, the stream EOF'd early.
@@ -953,17 +1042,24 @@ final class StreamingTTSSession {
                 // in flight, in which case scheduling onto a detached
                 // player would crash with `_engine != nil`.
                 guard !self.isCancelled, player.engine != nil else { return }
+                let startOrdinal = self.scheduledBufferCount
                 let frames = ElevenLabsTTSClient.scheduleSamples(
                     samples,
                     on: player,
                     format: streamFormat,
-                    startPlaybackIfNeeded: false
+                    startPlaybackIfNeeded: false,
+                    onPlayedBack: { [weak self] in
+                        Task { @MainActor [weak self] in self?.noteBufferPlayedBack() }
+                    }
                 )
                 if frames > 0 {
                     self.scheduledFrameCount += frames
                     self.scheduledSpeechChunkCount += 1
+                    self.scheduledBufferCount += 1
                 }
+                self.startOrdinalBySentence[sentenceIndex] = startOrdinal
                 self.maybeStartBufferedPlaybackIfReady()
+                self.fireDueCues()
             }
             // Do NOT sleep here. AVAudioPlayerNode plays scheduled
             // buffers in the order they were appended, contiguously.
@@ -993,6 +1089,7 @@ final class StreamingTTSSession {
             didFireStartCallback = true
             onPlaybackStarted()
         }
+        fireDueCues()
     }
 }
 

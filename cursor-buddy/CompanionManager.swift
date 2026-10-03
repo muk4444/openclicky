@@ -63,6 +63,9 @@ final class CursorOverlayState: ObservableObject {
     @Published var detectedElementDisplayFrame: CGRect?
     @Published var detectedElementBubbleText: String?
     @Published var detectedElementReturnsImmediately: Bool = false
+    /// While true the buddy stays at its target instead of flying back, so
+    /// it can move straight on to the next target of the same reply.
+    @Published var detectedElementHoldActive: Bool = false
     @Published var agentTaskBubbleText: String?
     @Published var externalPrimaryCaptionText: String?
     @Published var externalPrimaryCaptionAccentHex: String?
@@ -552,6 +555,18 @@ final class CompanionManager: ObservableObject {
             }
         }
     }
+    /// Keeps the buddy parked at its target between the pointing cues of one
+    /// spoken reply. Released when the reply ends or is interrupted.
+    var detectedElementHoldActive: Bool = false {
+        didSet {
+            updateCursorOverlayState { [detectedElementHoldActive] overlayState in
+                overlayState.detectedElementHoldActive = detectedElementHoldActive
+            }
+        }
+    }
+    /// Identifies the reply whose pointing cues are allowed to move the
+    /// buddy, so cues from an interrupted reply cannot fire into a new one.
+    var activePointingCueSessionID: UUID?
     private var lastPointedElementScreenLocation: CGPoint?
     private var lastPointedElementDisplayFrame: CGRect?
     private var lastPointedElementLabel: String?
@@ -2483,6 +2498,9 @@ final class CompanionManager: ObservableObject {
         detectedElementDisplayFrame = nil
         detectedElementBubbleText = nil
         detectedElementReturnsImmediately = false
+        if detectedElementHoldActive {
+            detectedElementHoldActive = false
+        }
     }
 
     func rememberPointedElement(at point: CGPoint, displayFrame: CGRect?, label: String?) {
@@ -2698,6 +2716,14 @@ final class CompanionManager: ObservableObject {
             sampleAutomaticVisualGuidanceCalibrationAnchor(calibrationAnchor)
         }
         guard clampedOverlay.isRenderable else { return }
+        // Only one frame at a time: an earlier rectangle next to the new one
+        // would overlap it and cover what the new one is meant to show.
+        if clampedOverlay.kind == .rectangle {
+            let replacedRectangleIDs = cursorOverlayState.visualGuidanceOverlays
+                .filter { $0.kind == .rectangle && $0.id != clampedOverlay.id }
+                .map(\.id)
+            replacedRectangleIDs.forEach { removeVisualGuidanceOverlay($0) }
+        }
         cursorOverlayState.visualGuidanceOverlays.removeAll { $0.id == clampedOverlay.id }
         cursorOverlayState.visualGuidanceOverlays.append(clampedOverlay)
         showCursorOverlayIfAvailable()
@@ -15240,6 +15266,12 @@ final class CompanionManager: ObservableObject {
         openAIRealtimeSpeechClient.stopPlayback()
         deepgramVoiceAgentClient.stopPlayback()
         voiceTTSClient.stopPlayback()
+        // Pointing cues of the interrupted reply must not fire any more, and a
+        // buddy parked at a target is free to fly back.
+        activePointingCueSessionID = nil
+        if detectedElementHoldActive {
+            detectedElementHoldActive = false
+        }
         clearVoiceResponseCaptionAndInteractiveBubble()
         if !buddyDictationManager.isDictationInProgress {
             currentAudioPowerLevel = 0
@@ -15932,6 +15964,18 @@ final class CompanionManager: ObservableObject {
         return context.promptFragment
     }
 
+    /// Lets one reply point at several things in turn. The cursor moves to a
+    /// target when the sentence in front of its tag starts to be spoken.
+    private static let multipleVisualTargetsPrompt = """
+
+    pointing at several things in one reply:
+    this overrides the one-tag limit above. when the user asks about more than one visible thing, such as several mistakes, several steps, or several buttons, you may use up to six visual tags in one reply. say the sentence or two about the first target, put that target's tag directly after those words, then continue with the next target and put its tag directly after the words about it, and so on. OpenClicky moves the cursor to a target at the moment the words in front of its tag start to be spoken, and keeps it there until the next tag's words begin. so every tag must come right after the words that talk about its target. never collect the tags at the end, and never put a tag before the words about it. keep each tag's words short enough to hear while looking at one spot. the tags are still never spoken and never described.
+
+    with a single target nothing changes: one tag at the very end of the reply. if nothing needs pointing, end with [POINT:none].
+
+    example with three targets: "im ersten satz steht hause statt haus. [POINT:412,233:hause] weiter unten fehlt bei dass ein s. [POINT:388,301:das] und in der letzten zeile ist morgen klein geschrieben. [POINT:540,366:morgen]"
+    """
+
     /// Overrides the Agent Mode wording in the base prompts when this build
     /// ships without agents, so the model never promises background work.
     private static var agentModeUnavailablePromptIfNeeded: String {
@@ -15947,6 +15991,7 @@ final class CompanionManager: ObservableObject {
         let memoryContext = codexHomeManager.persistentMemoryContext()
         return """
         \(Self.companionVoiceResponseSystemPrompt)
+        \(Self.multipleVisualTargetsPrompt)
         \(Self.agentModeUnavailablePromptIfNeeded)
         \(inlineWebSearchCapabilityPromptIfAvailable())
         \(currentAppSkillContextPrompt())

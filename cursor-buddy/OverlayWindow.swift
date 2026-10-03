@@ -522,6 +522,10 @@ struct BlueCursorView: View {
     @State private var cursorTrackingTimer: DispatchSourceTimer?
     @State private var welcomeText: String = ""
     @State private var showWelcome: Bool = true
+    /// Bumped for every new pointing target. Delayed pointing steps compare
+    /// against it so the timers of an earlier target cannot act on a later
+    /// one when a reply points at several things in a row.
+    @State private var pointingGeneration = 0
     @State private var bubbleSize: CGSize = .zero
     @State private var agentTaskBubbleSize: CGSize = .zero
     @State private var bubbleOpacity: Double = 1.0
@@ -933,6 +937,13 @@ struct BlueCursorView: View {
                 return
             }
             startNavigatingToCurrentDetectedLocationIfNeeded()
+        }
+        .onChange(of: cursorState.detectedElementHoldActive) { _, isHolding in
+            // The reply has ended: send a buddy that is still parked at its
+            // last target back to the cursor. One that is still in flight
+            // finishes its normal point-and-return on arrival.
+            guard !isHolding, buddyNavigationMode == .pointingAtTarget else { return }
+            fadeBubbleAndFlyBackToCursor(generation: pointingGeneration)
         }
         .onChange(of: cursorState.detectedElementDisplayFrame) { _, newFrame in
             // The location and its display frame reach the overlay state in
@@ -1441,6 +1452,7 @@ struct BlueCursorView: View {
         cursorPositionWhenNavigationStarted = convertScreenPointToSwiftUICoordinates(mouseLocation)
 
         // Enter navigation mode — stop cursor following
+        pointingGeneration += 1
         buddyNavigationMode = .navigatingToTarget
         isReturningToCursor = false
 
@@ -1544,6 +1556,7 @@ struct BlueCursorView: View {
     /// so OpenClicky visibly reaches the parking area before flying back.
     private func startPointingAtElement() {
         buddyNavigationMode = .pointingAtTarget
+        let generation = pointingGeneration
 
         // Rotate back to default angle now that we've arrived
         buddyRotationDegrees = triangleBaseRotationDegrees
@@ -1558,7 +1571,8 @@ struct BlueCursorView: View {
             navigationBubbleOpacity = 0.0
             navigationBubbleScale = 1.0
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
-                guard self.buddyNavigationMode == .pointingAtTarget else { return }
+                guard self.buddyNavigationMode == .pointingAtTarget,
+                      self.pointingGeneration == generation else { return }
                 self.startFlyingBackToCursor()
             }
             return
@@ -1570,16 +1584,25 @@ struct BlueCursorView: View {
             ?? navigationPointerPhrases.randomElement()
             ?? "right here!"
 
-        streamNavigationBubbleCharacter(phrase: pointerPhrase, characterIndex: 0) {
+        streamNavigationBubbleCharacter(phrase: pointerPhrase, characterIndex: 0, generation: generation) {
             // All characters streamed — hold for 3 seconds, then fly back
             DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                guard self.buddyNavigationMode == .pointingAtTarget else { return }
-                self.navigationBubbleOpacity = 0.0
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    guard self.buddyNavigationMode == .pointingAtTarget else { return }
-                    self.startFlyingBackToCursor()
-                }
+                guard self.buddyNavigationMode == .pointingAtTarget,
+                      self.pointingGeneration == generation else { return }
+                // A reply that points at several things keeps the buddy here
+                // until the next target or the end of the reply.
+                guard !self.cursorState.detectedElementHoldActive else { return }
+                self.fadeBubbleAndFlyBackToCursor(generation: generation)
             }
+        }
+    }
+
+    private func fadeBubbleAndFlyBackToCursor(generation: Int) {
+        navigationBubbleOpacity = 0.0
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            guard self.buddyNavigationMode == .pointingAtTarget,
+                  self.pointingGeneration == generation else { return }
+            self.startFlyingBackToCursor()
         }
     }
 
@@ -1588,9 +1611,10 @@ struct BlueCursorView: View {
     private func streamNavigationBubbleCharacter(
         phrase: String,
         characterIndex: Int,
+        generation: Int,
         onComplete: @escaping () -> Void
     ) {
-        guard buddyNavigationMode == .pointingAtTarget else { return }
+        guard buddyNavigationMode == .pointingAtTarget, pointingGeneration == generation else { return }
         guard characterIndex < phrase.count else {
             onComplete()
             return
@@ -1609,6 +1633,7 @@ struct BlueCursorView: View {
             self.streamNavigationBubbleCharacter(
                 phrase: phrase,
                 characterIndex: characterIndex + 1,
+                generation: generation,
                 onComplete: onComplete
             )
         }

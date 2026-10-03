@@ -30,7 +30,8 @@ enum TTSStreamingPlaybackEngine {
         _ samples: [Int16],
         on player: AVAudioPlayerNode,
         format: AVAudioFormat,
-        startPlaybackIfNeeded: Bool = true
+        startPlaybackIfNeeded: Bool = true,
+        onPlayedBack: (@Sendable () -> Void)? = nil
     ) -> AVAudioFramePosition {
         guard !samples.isEmpty,
               let buffer = AVAudioPCMBuffer(
@@ -64,6 +65,7 @@ enum TTSStreamingPlaybackEngine {
         PendingBufferTracker.shared.increment(playerID)
         player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { _ in
             PendingBufferTracker.shared.decrement(playerID)
+            onPlayedBack?()
         }
         if startPlaybackIfNeeded && !player.isPlaying {
             player.play()

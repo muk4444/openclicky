@@ -360,6 +360,12 @@ extension CompanionManager {
                 // text (e.g. when a `[POINT:...]` tag completes mid-
                 // stream and the parser strips it).
                 var emittedSpokenSoFar = ""
+                // Visual-guidance tags already handed to the TTS session as
+                // cues, and how many of them carried a real target.
+                var registeredInlineTagCount = 0
+                var actionableInlineCueCount = 0
+                let pointingCueSessionID = UUID()
+                self.activePointingCueSessionID = pointingCueSessionID
                 // Throttle the response-card publish so we don't re-render
                 // SwiftUI on every LLM token (which can be 10+ per second).
                 // Each publish hits the main actor, contending with the
@@ -393,8 +399,14 @@ extension CompanionManager {
                     userPrompt: userPromptForClaude,
                     assistantPrefill: assistantPrefillText,
                     onTextChunk: { accumulatedText in
-                        let parsedSpoken = Self.parsePointingCoordinates(from: accumulatedText).spokenText
-                        let trimmed = parsedSpoken.trimmingCharacters(in: .whitespacesAndNewlines)
+                        // Tags can sit anywhere in the reply, one after each
+                        // sentence it belongs to. Take them all out of the
+                        // spoken text and keep their positions.
+                        let extraction = Self.extractInlineVisualGuidanceTags(from: accumulatedText)
+                        let parsedSpoken = extraction.spokenText
+                        let trimmed = parsedSpoken
+                            .replacingOccurrences(of: #" {2,}"#, with: " ", options: .regularExpression)
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
                         if !trimmed.isEmpty {
                             let now = Date()
                             if now.timeIntervalSince(lastCardPublishedAt) >= cardPublishInterval {
@@ -424,6 +436,30 @@ extension CompanionManager {
                         // Strip a trailing partial visual-guidance tag so we
                         // never push "[POI", "[RECT", or "[SCRIBBLE" into TTS.
                         let safeSpoken = Self.stripTrailingVisualGuidanceTagFragment(parsedSpoken)
+
+                        // Hand each newly completed tag to the TTS session as
+                        // a cue, right after the text in front of it, so the
+                        // cursor moves when those words are actually spoken.
+                        for tag in extraction.tags.dropFirst(registeredInlineTagCount) {
+                            registeredInlineTagCount += 1
+                            let spokenBeforeTag = String(parsedSpoken.prefix(tag.spokenOffset))
+                            if spokenBeforeTag.hasPrefix(emittedSpokenSoFar),
+                               spokenBeforeTag.count > emittedSpokenSoFar.count {
+                                let delta = String(spokenBeforeTag.dropFirst(emittedSpokenSoFar.count))
+                                emittedSpokenSoFar = spokenBeforeTag
+                                streamingTTSSession.appendText(delta)
+                            }
+                            guard tag.isActionable else { continue }
+                            actionableInlineCueCount += 1
+                            let tagText = tag.text
+                            streamingTTSSession.attachCueToCurrentSpan {
+                                self.applyInlineVisualGuidanceCue(
+                                    tagText: tagText,
+                                    screenCaptures: screenCaptures,
+                                    sessionID: pointingCueSessionID
+                                )
+                            }
+                        }
 
                         guard safeSpoken.hasPrefix(emittedSpokenSoFar),
                               safeSpoken.count > emittedSpokenSoFar.count else {
@@ -491,102 +527,12 @@ extension CompanionManager {
                     return
                 }
 
-                // Handle element pointing if Claude returned coordinates.
-                // Switch to idle BEFORE setting the location so the triangle
-                // becomes visible and can fly to the target. Without this, the
-                // spinner hides the triangle and the flight animation is invisible.
-                let hasVisualGuidance = parseResult.coordinate != nil || parseResult.visualOverlay != nil
-                if hasVisualGuidance {
-                    self.voiceState = .idle
-                }
-
-                // Pick the screen capture for the buddy to point on.
-                //
-                // Resolution order:
-                //   1. If Claude returned a screenNumber tag, trust it —
-                //      that's a deliberate signal that the element lives on
-                //      that specific screen. Honor it even when the cursor
-                //      is on a different display (the user may have looked
-                //      at screen 2 while the cursor stayed on screen 1).
-                //   2. If no screenNumber, use the cursor's current screen
-                //      (re-read live, not the stale `isCursorScreen` flag
-                //      from capture time — Claude can take several seconds
-                //      to respond and the user may have moved in that window).
-                //   3. Last resort: the captured `isCursorScreen` flag.
-                //
-                // Earlier versions of this logic preferred the cursor screen
-                // even when Claude returned screenNumber, which broke the
-                // common "Claude correctly identified an element on the
-                // other screen" case. The current logic keeps the live-cursor
-                // benefit when Claude *didn't* tag a screen, and trusts
-                // Claude when it did.
-                let liveMouseLocation = NSEvent.mouseLocation
-                let liveCursorCapture = screenCaptures.first { capture in
-                    capture.displayFrame.contains(liveMouseLocation)
-                }
-                let targetScreenCapture: CompanionScreenCapture? = {
-                    if let screenNumber = parseResult.screenNumber,
-                       screenNumber >= 1 && screenNumber <= screenCaptures.count {
-                        return screenCaptures[screenNumber - 1]
-                    }
-                    return liveCursorCapture
-                        ?? screenCaptures.first(where: { $0.isCursorScreen })
-                }()
-
-                if let pointCoordinate = parseResult.coordinate,
-                   let targetScreenCapture {
-                    // Claude's coordinates are in the screenshot's pixel space
-                    // (top-left origin, e.g. 1280x831). Scale to the display's
-                    // point space (e.g. 1512x982), then convert to AppKit global coords.
-                    let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-                    let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-                    let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
-                    let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
-                    let displayFrame = targetScreenCapture.displayFrame
-
-                    // Clamp to screenshot coordinate space
-                    let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-                    let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-
-                    // Scale from screenshot pixels to display points
-                    let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-                    let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-
-                    // Convert from top-left origin (screenshot) to bottom-left origin (AppKit)
-                    let appKitY = displayHeight - displayLocalY
-
-                    // Convert display-local coords to global screen coords
-                    let calibrationOffset = Self.visualGuidanceCalibrationOffset(for: displayFrame)
-                    let globalLocation = CGPoint(
-                        x: displayLocalX + displayFrame.origin.x,
-                        y: appKitY + displayFrame.origin.y
-                    ).applying(
-                        CGAffineTransform(
-                            translationX: calibrationOffset.width,
-                            y: calibrationOffset.height
-                        )
-                    )
-
-                    detectedElementScreenLocation = globalLocation
-                    detectedElementDisplayFrame = displayFrame
-                    detectedElementBubbleText = Self.pointingBubbleText(for: parseResult.elementLabel)
-                    rememberPointedElement(
-                        at: globalLocation,
-                        displayFrame: displayFrame,
-                        label: parseResult.elementLabel
-                    )
-                    ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
-                    print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
-                } else if let visualOverlay = parseResult.visualOverlay,
-                          let targetScreenCapture {
-                    self.showVisualGuidanceOverlay(
-                        self.globalVisualGuidanceOverlay(
-                            fromScreenshotOverlay: visualOverlay,
-                            in: targetScreenCapture
-                        ),
-                        sourceCapture: targetScreenCapture
-                    )
-                    print("🎯 Visual guidance overlay: \(visualOverlay.kind.rawValue) → \"\(parseResult.elementLabel ?? "overlay")\"")
+                // Visual guidance. Tags were handed to the TTS session as cues
+                // while the reply streamed in, so the cursor and overlays
+                // already follow the spoken sentences. Only a reply without
+                // any target falls back to the proactive detector.
+                if actionableInlineCueCount > 0 {
+                    print("🎯 Visual guidance cues: \(actionableInlineCueCount), last → \"\(parseResult.elementLabel ?? "target")\"")
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
                     await attemptProactiveElementPointingIfUseful(
@@ -656,12 +602,10 @@ extension CompanionManager {
                     // streamingTTSSession.appendText), so we compare
                     // against the continuation portion of spokenText —
                     // i.e. spokenText with the prefill prefix stripped.
-                    let continuationSpoken: String
-                    if assistantPrefillText != nil {
-                        continuationSpoken = Self.parsePointingCoordinates(from: continuationText).spokenText
-                    } else {
-                        continuationSpoken = spokenText
-                    }
+                    // Use the same tag extraction as the streaming handler,
+                    // so this text extends what was emitted character for
+                    // character.
+                    let continuationSpoken = Self.extractInlineVisualGuidanceTags(from: continuationText).spokenText
                     if continuationSpoken.hasPrefix(emittedSpokenSoFar),
                        continuationSpoken.count > emittedSpokenSoFar.count {
                         let tailDelta = String(continuationSpoken.dropFirst(emittedSpokenSoFar.count))
@@ -797,6 +741,7 @@ extension CompanionManager {
             if !Task.isCancelled {
                 self.lastVoiceInteractionCompletedAt = Date()
                 self.voiceState = .idle
+                self.releasePointingHoldAfterReply()
                 scheduleTransientHideIfNeeded()
             }
         }
@@ -1609,6 +1554,114 @@ extension CompanionManager {
                 code: -21,
                 userInfo: [NSLocalizedDescriptionKey: "\(selectedPointingModel.id) is not a supported pointing model."]
             )
+        }
+    }
+
+    /// Applies one inline visual-guidance tag at the moment its sentence is
+    /// spoken. Ignored when the reply it belongs to is no longer current.
+    func applyInlineVisualGuidanceCue(
+        tagText: String,
+        screenCaptures: [CompanionScreenCapture],
+        sessionID: UUID
+    ) {
+        guard activePointingCueSessionID == sessionID else { return }
+        let parseResult = Self.parseTrailingVisualGuidanceTag(from: tagText)
+        applyVisualGuidance(parseResult, screenCaptures: screenCaptures, holdsUntilReplyEnds: true)
+    }
+
+    /// Moves the buddy to the parsed target, or draws the parsed overlay.
+    /// Returns false when the tag carried nothing to show.
+    @discardableResult
+    func applyVisualGuidance(
+        _ parseResult: PointingParseResult,
+        screenCaptures: [CompanionScreenCapture],
+        holdsUntilReplyEnds: Bool
+    ) -> Bool {
+        // Pick the screen capture to point on. A screenNumber tag is a
+        // deliberate signal and wins. Without one, use the screen the cursor
+        // is on right now (not the stale flag from capture time), and only
+        // then the captured cursor-screen flag.
+        let liveMouseLocation = NSEvent.mouseLocation
+        let liveCursorCapture = screenCaptures.first { capture in
+            capture.displayFrame.contains(liveMouseLocation)
+        }
+        let targetScreenCapture: CompanionScreenCapture? = {
+            if let screenNumber = parseResult.screenNumber,
+               screenNumber >= 1 && screenNumber <= screenCaptures.count {
+                return screenCaptures[screenNumber - 1]
+            }
+            return liveCursorCapture
+                ?? screenCaptures.first(where: { $0.isCursorScreen })
+        }()
+        guard let targetScreenCapture else { return false }
+
+        if let pointCoordinate = parseResult.coordinate {
+            // Claude's coordinates are in the screenshot's pixel space
+            // (top-left origin). Scale to the display's point space, then
+            // convert to AppKit global coordinates.
+            let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
+            let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
+            let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
+            let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
+            let displayFrame = targetScreenCapture.displayFrame
+            guard screenshotWidth > 0, screenshotHeight > 0 else { return false }
+
+            let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
+            let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
+            let displayLocalX = clampedX * (displayWidth / screenshotWidth)
+            let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+            let appKitY = displayHeight - displayLocalY
+
+            let calibrationOffset = Self.visualGuidanceCalibrationOffset(for: displayFrame)
+            let globalLocation = CGPoint(
+                x: displayLocalX + displayFrame.origin.x + calibrationOffset.width,
+                y: appKitY + displayFrame.origin.y + calibrationOffset.height
+            )
+
+            if holdsUntilReplyEnds {
+                detectedElementHoldActive = true
+            }
+            // Frame and caption first: the overlay starts the flight when the
+            // location changes and reads the other two at that moment.
+            detectedElementDisplayFrame = displayFrame
+            detectedElementBubbleText = Self.pointingBubbleText(for: parseResult.elementLabel)
+            detectedElementScreenLocation = globalLocation
+            rememberPointedElement(
+                at: globalLocation,
+                displayFrame: displayFrame,
+                label: parseResult.elementLabel
+            )
+            ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
+            print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
+            return true
+        }
+
+        if let visualOverlay = parseResult.visualOverlay {
+            showVisualGuidanceOverlay(
+                globalVisualGuidanceOverlay(
+                    fromScreenshotOverlay: visualOverlay,
+                    in: targetScreenCapture
+                ),
+                sourceCapture: targetScreenCapture
+            )
+            print("🎯 Visual guidance overlay: \(visualOverlay.kind.rawValue) → \"\(parseResult.elementLabel ?? "overlay")\"")
+            return true
+        }
+
+        return false
+    }
+
+    /// Lets the buddy fly back once the reply has finished. A short pause
+    /// keeps the last target visible for a moment after the voice stops.
+    func releasePointingHoldAfterReply() {
+        guard detectedElementHoldActive else { return }
+        let sessionID = activePointingCueSessionID
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            await MainActor.run {
+                guard let self, self.activePointingCueSessionID == sessionID else { return }
+                self.detectedElementHoldActive = false
+            }
         }
     }
 
