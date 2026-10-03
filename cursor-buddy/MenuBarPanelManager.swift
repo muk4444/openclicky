@@ -224,8 +224,10 @@ final class MenuBarPanelManager: NSObject {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
-        menu.addItem(.separator())
-        menu.addItem(agentHistoryMenuItem())
+        if AppBundleConfiguration.isAgentModeEnabled {
+            menu.addItem(.separator())
+            menu.addItem(agentHistoryMenuItem())
+        }
 
         menu.popUp(positioning: quickItem, at: NSPoint(x: 0, y: sender.bounds.height + 2), in: sender)
     }
@@ -900,8 +902,10 @@ final class AgentMenuBarStatusManager: NSObject {
         settingsItem.target = self
         menu.addItem(settingsItem)
 
-        menu.addItem(.separator())
-        menu.addItem(agentHistoryMenuItem())
+        if AppBundleConfiguration.isAgentModeEnabled {
+            menu.addItem(.separator())
+            menu.addItem(agentHistoryMenuItem())
+        }
 
         menu.popUp(positioning: quickItem, at: NSPoint(x: 0, y: sender.bounds.height + 2), in: sender)
     }

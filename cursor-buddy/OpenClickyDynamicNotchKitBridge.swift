@@ -973,13 +973,15 @@ private struct OpenClickyDynamicNotchKitExpandedView: View {
                     .frame(height: 18)
                     .overlay(.white.opacity(0.14))
 
-                OpenClickyDynamicNotchKitChip(
-                    title: "Agent",
-                    systemImage: "terminal.fill",
-                    accentColor: Color(nsColor: model.activityAccentColor),
-                    isSelected: model.selectedInputMethod == .agent
-                ) {
-                    model.toggleInputMethod(.agent)
+                if AppBundleConfiguration.isAgentModeEnabled {
+                    OpenClickyDynamicNotchKitChip(
+                        title: "Agent",
+                        systemImage: "terminal.fill",
+                        accentColor: Color(nsColor: model.activityAccentColor),
+                        isSelected: model.selectedInputMethod == .agent
+                    ) {
+                        model.toggleInputMethod(.agent)
+                    }
                 }
 
                 OpenClickyDynamicNotchKitChip(
@@ -991,13 +993,15 @@ private struct OpenClickyDynamicNotchKitExpandedView: View {
                     model.toggleInputMethod(.screen)
                 }
 
-                OpenClickyDynamicNotchKitChip(
-                    title: "Skills",
-                    systemImage: "hammer.fill",
-                    accentColor: Color(nsColor: model.activityAccentColor),
-                    isSelected: model.selectedInputMethod == .skills
-                ) {
-                    model.toggleInputMethod(.skills)
+                if AppBundleConfiguration.isAgentModeEnabled {
+                    OpenClickyDynamicNotchKitChip(
+                        title: "Skills",
+                        systemImage: "hammer.fill",
+                        accentColor: Color(nsColor: model.activityAccentColor),
+                        isSelected: model.selectedInputMethod == .skills
+                    ) {
+                        model.toggleInputMethod(.skills)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

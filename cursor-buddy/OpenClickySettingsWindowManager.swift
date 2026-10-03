@@ -144,6 +144,12 @@ private enum OpenClickySettingsSection: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    /// Sections offered in the sidebar. Agents and Automations are hidden
+    /// because this build does not ship Agent Mode.
+    static var visibleCases: [OpenClickySettingsSection] {
+        allCases.filter { $0 != .agents && $0 != .automations }
+    }
+
     var title: String {
         switch self {
         case .basic: return "Basic"
@@ -385,7 +391,7 @@ struct OpenClickySettingsView: View {
                 .padding(.top, 18)
                 .padding(.bottom, 12)
 
-            ForEach(OpenClickySettingsSection.allCases) { section in
+            ForEach(OpenClickySettingsSection.visibleCases) { section in
                 Button {
                     selectedSection = section
                 } label: {
@@ -435,7 +441,7 @@ struct OpenClickySettingsView: View {
         case .basic:
             return "Working defaults, voice status, permission status, and everyday OpenClicky controls."
         case .advancedProviders:
-            return "Provider credentials, voice services, Agent Mode defaults, and external service configuration."
+            return "Provider credentials, voice services, and response models."
         case .computerUse:
             return "In-app Native Computer Use, pointing models, and cuaDriver configuration."
         case .permissions:
@@ -445,7 +451,7 @@ struct OpenClickySettingsView: View {
         case .automations:
             return "Scheduled prompts and workflows. Interval (every N minutes) or 5-field cron, optionally bound to a specialist agent."
         case .connections:
-            return "Google Workspace, persistent memory folders, logs, widgets, and utilities."
+            return "Persistent memory folders, logs, widgets, and utilities."
         case .models:
             return "Offline model installs and the local inference runtime that gets models ready for use."
         }
@@ -599,7 +605,7 @@ struct OpenClickySettingsView: View {
 
                 toggleRow(
                     title: "Circle while talking",
-                    subtitle: "Hold push-to-talk, then click and drag a red trail around something while speaking. On release, the region goes with your instruction to voice and Agent Mode.",
+                    subtitle: "Hold push-to-talk, then click and drag a red trail around something while speaking. On release, the region goes with your spoken instruction.",
                     systemImageName: "pencil.tip.crop.circle",
                     isOn: $circleWhileTalkingEnabled
                 )
@@ -1323,35 +1329,6 @@ struct OpenClickySettingsView: View {
                 }
             }
 
-            settingsGroup("Hosted endpoints") {
-                valueRow(
-                    title: "Agent Mode provider",
-                    subtitle: codexAgentEndpointSummary,
-                    systemImageName: "network"
-                )
-
-                textFieldRow(
-                    title: "OpenAI-compatible base URL",
-                    subtitle: "Optional endpoint for Agent Mode and Codex-compatible hosted or local servers. Leave empty for OpenAI/ChatGPT auth.",
-                    systemImageName: "link",
-                    placeholder: "https://api.openai.com/v1 or http://127.0.0.1:8000",
-                    text: Binding(
-                        get: { codexAgentBaseURL },
-                        set: { codexAgentBaseURL = $0 }
-                    )
-                )
-
-                actionRow(title: "Sync Agent Mode provider config", systemImageName: "arrow.clockwise") {
-                    syncCodexProviderSettings()
-                }
-
-                valueRow(
-                    title: "Config sync",
-                    subtitle: codexConfigSyncMessage,
-                    systemImageName: "doc.text"
-                )
-            }
-
             if shouldShowLocalListeningControls {
                 detailedLocalListeningGroup
             }
@@ -1415,49 +1392,6 @@ struct OpenClickySettingsView: View {
                     }
                 }
             }
-
-            settingsGroup("Agent Mode Model") {
-                modelOptionGrid(
-                    options: OpenClickyModelCatalog.codexActionsModels,
-                    selectedModelID: session.model,
-                    select: { session.setModel($0) }
-                )
-
-                textFieldRow(
-                    title: "Working directory",
-                    subtitle: "Default folder used by new agent turns.",
-                    systemImageName: "folder",
-                    placeholder: FileManager.default.homeDirectoryForCurrentUser.path,
-                    text: Binding(
-                        get: { session.workingDirectoryPath },
-                        set: { newValue in
-                            session.workingDirectoryPath = newValue
-                            UserDefaults.standard.set(newValue, forKey: "clickyCodexWorkingDirectory")
-                        }
-                    ),
-                    openPath: { session.workingDirectoryPath }
-                )
-            }
-
-            settingsGroup("Agent dock position") {
-                AgentParkingPositionPicker(
-                    selection: Binding(
-                        get: { companionManager.agentParkingPosition },
-                        set: { companionManager.setAgentParkingPosition($0) }
-                    ),
-                    calibrationChanged: { position, offset in
-                        companionManager.setAgentParkingCalibrationOffset(offset, for: position)
-                    }
-                )
-                .padding(.horizontal, 4)
-                .padding(.vertical, 10)
-            }
-
-            settingsGroup("Agent tools") {
-                actionRow(title: "Warm up Agent Mode", systemImageName: "bolt") {
-                    companionManager.warmUpCodexAgentMode()
-                }
-            }
         }
     }
 
@@ -1468,12 +1402,6 @@ struct OpenClickySettingsView: View {
                     title: "OpenClicky local endpoint",
                     subtitle: localInferenceRuntime.state.message,
                     systemImageName: "server.rack"
-                )
-
-                valueRow(
-                    title: "Agent Mode endpoint",
-                    subtitle: codexAgentEndpointSummary,
-                    systemImageName: "network"
                 )
             }
 
@@ -1695,48 +1623,6 @@ struct OpenClickySettingsView: View {
                 )
             }
 
-            settingsGroup("Desktop notifications") {
-                permissionRow(
-                    title: "Notifications",
-                    statusText: notificationAuthorizationSummary,
-                    isGranted: notificationAuthorizationGranted,
-                    settingsURL: Self.notificationSettingsURL
-                )
-                toggleRow(
-                    title: "Task-complete notifications",
-                    subtitle: "Shows native macOS banners when OpenClicky background agents finish, stop, or are cancelled.",
-                    systemImageName: "bell.badge",
-                    isOn: Binding(
-                        get: { desktopNotificationsEnabled },
-                        set: { newValue in
-                            desktopNotificationsEnabled = newValue
-                            if newValue {
-                                OpenClickyDesktopNotificationCenter.shared.requestAuthorizationForUserAction { _ in
-                                    refreshNotificationAuthorizationStatus()
-                                }
-                            }
-                        }
-                    )
-                )
-                toggleRow(
-                    title: "Task-complete voice",
-                    subtitle: "Speaks a short finish summary after an OpenClicky background agent completes. Handoff speech stays separate.",
-                    systemImageName: "speaker.wave.2",
-                    isOn: $agentCompletionVoiceEnabled
-                )
-                actionRow(title: "Request notification permission", systemImageName: "bell.badge") {
-                    desktopNotificationsEnabled = true
-                    OpenClickyDesktopNotificationCenter.shared.requestAuthorizationForUserAction { _ in
-                        refreshNotificationAuthorizationStatus()
-                    }
-                }
-                actionRow(title: "Send test notification", systemImageName: "bell") {
-                    desktopNotificationsEnabled = true
-                    OpenClickyDesktopNotificationCenter.shared.postTestNotification()
-                    refreshNotificationAuthorizationStatus()
-                }
-            }
-
             settingsGroup("Actions") {
                 actionRow(title: "Refresh permission status", systemImageName: "checklist") {
                     companionManager.refreshAllPermissions()
@@ -1861,122 +1747,6 @@ struct OpenClickySettingsView: View {
 
     private var connectionsPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
-            settingsGroup("Google Workspace") {
-                googleConnectionHeader
-
-                valueRow(
-                    title: "gogcli",
-                    subtitle: gogCLIStatus.isInstalled
-                        ? "\(gogCLIStatus.version ?? "Installed") — \(gogCLIStatus.executablePath ?? "gog")"
-                        : "Not installed. Install with Homebrew: brew install gogcli",
-                    systemImageName: gogCLIStatus.isInstalled ? "checkmark.circle" : "exclamationmark.triangle"
-                )
-
-                valueRow(
-                    title: "OAuth credentials",
-                    subtitle: gogCLIStatus.credentialsExist
-                        ? "Desktop OAuth client is stored locally in gogcli."
-                        : "Add a Google Cloud Desktop OAuth client JSON with gog auth credentials.",
-                    systemImageName: gogCLIStatus.credentialsExist ? "checkmark.seal" : "key"
-                )
-
-                valueRow(
-                    title: "Account",
-                    subtitle: gogCLIStatus.accountEmail ?? "No default Google account authorized yet.",
-                    systemImageName: gogCLIStatus.isReadyForUserAccount ? "person.crop.circle.badge.checkmark" : "person.crop.circle.badge.exclamationmark"
-                )
-
-                valueRow(
-                    title: "Storage",
-                    subtitle: gogCLIStatus.configPath ?? "gogcli manages its own local config and keyring.",
-                    systemImageName: "externaldrive.badge.person.crop",
-                    openPath: gogCLIStatus.configPath
-                )
-            }
-
-            settingsGroup("MCP servers") {
-                toggleRow(
-                    title: "OpenAI developer docs",
-                    subtitle: "Optional. Adds official OpenAI docs to new agents, but can slow agent startup.",
-                    systemImageName: "book.pages",
-                    isOn: Binding(
-                        get: { mcpDeveloperDocsEnabled },
-                        set: { newValue in
-                            mcpDeveloperDocsEnabled = newValue
-                            syncCodexMCPSettings()
-                        }
-                    )
-                )
-
-                toggleRow(
-                    title: "Composio connected apps",
-                    subtitle: "Adds Composio Connect MCP for GitHub and other connected-app actions.",
-                    systemImageName: "link.badge.plus",
-                    isOn: Binding(
-                        get: { mcpComposioConnectEnabled },
-                        set: { newValue in
-                            mcpComposioConnectEnabled = newValue
-                            syncCodexMCPSettings()
-                        }
-                    )
-                )
-
-                toggleRow(
-                    title: "OpenClicky computer-use MCP",
-                    subtitle: "Optional. Exposes the local cuaDriver bridge to new agents when installed.",
-                    systemImageName: "cursorarrow.motionlines",
-                    isOn: Binding(
-                        get: { mcpComputerUseEnabled },
-                        set: { newValue in
-                            mcpComputerUseEnabled = newValue
-                            syncCodexMCPSettings()
-                        }
-                    )
-                )
-
-                textFieldRow(
-                    title: "cuaDriver command",
-                    subtitle: mcpCuaDriverStatusText,
-                    systemImageName: "terminal",
-                    placeholder: CuaDriverMCPConfiguration.resolvedCommandPath() ?? "/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
-                    text: Binding(
-                        get: { mcpCuaDriverCommand },
-                        set: { newValue in
-                            mcpCuaDriverCommand = newValue
-                            syncCodexMCPSettings()
-                        }
-                    ),
-                    openPath: { mcpCuaDriverEffectiveCommand }
-                )
-
-                valueRow(
-                    title: "Codex config",
-                    subtitle: companionManager.codexHomeManager.codexHomeDirectory.appendingPathComponent("config.toml", isDirectory: false).path,
-                    systemImageName: "doc.text",
-                    openPath: companionManager.codexHomeManager.codexHomeDirectory.appendingPathComponent("config.toml", isDirectory: false).path
-                )
-
-                valueRow(
-                    title: "Sync status",
-                    subtitle: codexConfigSyncMessage,
-                    systemImageName: "checkmark.circle"
-                )
-            }
-
-            settingsGroup("Workspace Actions") {
-                actionRow(title: isRefreshingGogCLIStatus ? "Refresh Google status…" : "Refresh Google status", systemImageName: "arrow.clockwise") {
-                    refreshGogCLIStatus()
-                }
-                actionRow(title: "Sync MCP config", systemImageName: "arrow.clockwise") {
-                    syncCodexMCPSettings()
-                }
-                if !gogCLIStatus.isInstalled || !gogCLIStatus.credentialsExist {
-                    actionRow(title: "Copy Google setup commands", systemImageName: "doc.on.doc") {
-                        copyGoogleWorkspaceSetupCommands()
-                    }
-                }
-            }
-
             settingsGroup("Persistent memory") {
                 valueRow(
                     title: "Memory file",

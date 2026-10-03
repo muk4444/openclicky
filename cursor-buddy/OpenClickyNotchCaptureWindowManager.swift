@@ -1734,11 +1734,17 @@ final class OpenClickyNotchCaptureWindowManager {
                     systemImage: "sparkles",
                     prompt: "Look at the active \(appName) window and suggest the most useful OpenClicky actions."
                 ),
-                OpenClickyNotchContextAction(
-                    title: "Start an agent",
-                    systemImage: "shippingbox",
-                    prompt: "Start an OpenClicky agent using the current \(appName) window as context."
-                )
+                AppBundleConfiguration.isAgentModeEnabled
+                    ? OpenClickyNotchContextAction(
+                        title: "Start an agent",
+                        systemImage: "shippingbox",
+                        prompt: "Start an OpenClicky agent using the current \(appName) window as context."
+                    )
+                    : OpenClickyNotchContextAction(
+                        title: "Show me around",
+                        systemImage: "cursorarrow.rays",
+                        prompt: "Point at the most important control in the active \(appName) window and explain what it does."
+                    )
             ],
             primaryPrompt: "Use OpenClicky with the active \(appName) window and suggest the next useful action."
         )

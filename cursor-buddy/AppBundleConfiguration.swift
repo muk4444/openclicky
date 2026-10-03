@@ -69,6 +69,11 @@ nonisolated enum AppBundleConfiguration {
     /// When false, any mouse movement while holding the key draws.
     static let userCircleWhileTalkingRequireClickDefaultsKey = "openClickyCircleWhileTalkingRequireClick"
     static let appGroupIdentifier = "group.com.nepomuk.openclicky"
+    /// Agent Mode (background Codex agents, automations, the agent dock and
+    /// chat HUD) is switched off in this build. OpenClicky only listens,
+    /// explains what is on screen and points at it. The agent code is kept
+    /// so upstream changes still merge; every entry point checks this flag.
+    static let isAgentModeEnabled = false
 
     static func registerDefaults() {
         UserDefaults.standard.register(defaults: [

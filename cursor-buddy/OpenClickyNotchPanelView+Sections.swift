@@ -223,7 +223,8 @@ extension OpenClickyNotchPanelView {
             if hasHomeConversationActivity {
                 return 560
             }
-            return 560
+            // The mode switcher row is hidden without Agent Mode.
+            return AppBundleConfiguration.isAgentModeEnabled ? 560 : 520
         case .agents:
             if expandedAgentSessionID != nil {
                 // Expanding an agent chat should reveal the session inside the
@@ -235,7 +236,8 @@ extension OpenClickyNotchPanelView {
             }
             return agentPanelSelection == .specialists ? 430 : 500
         case .connections:
-            return 710
+            // Only the voice and computer-use rows remain without Agent Mode.
+            return AppBundleConfiguration.isAgentModeEnabled ? 710 : 480
         case .settings:
             return 520
         }
@@ -257,18 +259,20 @@ extension OpenClickyNotchPanelView {
 
     private var topStatusRail: some View {
         HStack(spacing: 7) {
-            Button {
-                selectedTab = .agents
-            } label: {
-                statusPill(
-                    title: runningAgentCount == 0 ? "Agents ready" : "\(runningAgentCount) running",
-                    systemImageName: "terminal.fill",
-                    color: runningAgentCount == 0 ? DS.Colors.textSecondary : DS.Colors.accentText
-                )
+            if AppBundleConfiguration.isAgentModeEnabled {
+                Button {
+                    selectedTab = .agents
+                } label: {
+                    statusPill(
+                        title: runningAgentCount == 0 ? "Agents ready" : "\(runningAgentCount) running",
+                        systemImageName: "terminal.fill",
+                        color: runningAgentCount == 0 ? DS.Colors.textSecondary : DS.Colors.accentText
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Show OpenClicky agents")
+                .help("Show OpenClicky agents")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Show OpenClicky agents")
-            .help("Show OpenClicky agents")
 
             statusPill(
                 title: companionManager.allPermissionsGranted ? "Permissions" : "Needs permissions",
@@ -418,10 +422,14 @@ extension OpenClickyNotchPanelView {
                     VStack(spacing: 9) {
                         quickPromptField
 
-                        HStack(spacing: 8) {
-                            quickPromptModeButton(.ask)
-                            quickPromptModeButton(.agent)
-                            quickPromptModeButton(.chat)
+                        // Without Agent Mode there is only one way to ask, so
+                        // the mode switcher would be a single dead button.
+                        if AppBundleConfiguration.isAgentModeEnabled {
+                            HStack(spacing: 8) {
+                                quickPromptModeButton(.ask)
+                                quickPromptModeButton(.agent)
+                                quickPromptModeButton(.chat)
+                            }
                         }
                     }
                 }
@@ -520,6 +528,35 @@ extension OpenClickyNotchPanelView {
     }
 
     private var homeSuggestionItems: [HomeSuggestionItem] {
+        guard AppBundleConfiguration.isAgentModeEnabled else {
+            return [
+                HomeSuggestionItem(
+                    id: "summarise-screen",
+                    title: "Summarise screen",
+                    systemImageName: "rectangle.and.text.magnifyingglass",
+                    prompt: OpenClickyQuickActionPrompts.screen,
+                    mode: .ask,
+                    opensSettings: false
+                ),
+                HomeSuggestionItem(
+                    id: "show-me-where",
+                    title: "Show me where",
+                    systemImageName: "cursorarrow.rays",
+                    prompt: "Point at the most important control on my screen and explain what it does.",
+                    mode: .ask,
+                    opensSettings: false
+                ),
+                HomeSuggestionItem(
+                    id: "open-settings",
+                    title: "Open settings",
+                    systemImageName: "gearshape.fill",
+                    prompt: nil,
+                    mode: nil,
+                    opensSettings: true
+                )
+            ]
+        }
+
         let configured = skillDiscoveryStore.suggestions.prefix(2).map { suggestion in
             HomeSuggestionItem(
                 id: "skill-\(suggestion.id)",
@@ -987,9 +1024,13 @@ extension OpenClickyNotchPanelView {
                 OpenClickyNotchEmptyState(
                     systemImageName: "point.3.connected.trianglepath.dotted",
                     title: "Connections",
-                    subtitle: "Use Agent Mode skills for Notion, GitHub, mail, browser, files, and app workflows. No hosted sync required."
+                    subtitle: AppBundleConfiguration.isAgentModeEnabled
+                        ? "Use Agent Mode skills for Notion, GitHub, mail, browser, files, and app workflows. No hosted sync required."
+                        : "Status of the services OpenClicky uses to listen, speak, and point."
                 )
-                skillDiscoveryPanel
+                if AppBundleConfiguration.isAgentModeEnabled {
+                    skillDiscoveryPanel
+                }
                 VStack(spacing: 7) {
                     ForEach(connectionRows) { row in
                         connectionRow(row)
@@ -1003,6 +1044,7 @@ extension OpenClickyNotchPanelView {
         }
         .frame(maxHeight: 590, alignment: .top)
         .onAppear {
+            guard AppBundleConfiguration.isAgentModeEnabled else { return }
             automationStore.ensureSkillDiscoveryAutomationInstalled()
             skillDiscoveryStore.reload()
         }
@@ -1412,22 +1454,24 @@ extension OpenClickyNotchPanelView {
                     .font(panelUIFont(size: 12, weight: .heavy))
                     .foregroundColor(DS.Colors.textSecondary)
                 Spacer()
-                Button(action: { presentHatchSheet() }) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "sparkles")
-                            .font(panelUIFont(size: 12, weight: .semibold))
-                        Text("Hatch new")
-                            .font(panelUIFont(size: 10, weight: .heavy))
+                if AppBundleConfiguration.isAgentModeEnabled {
+                    Button(action: { presentHatchSheet() }) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "sparkles")
+                                .font(panelUIFont(size: 12, weight: .semibold))
+                            Text("Hatch new")
+                                .font(panelUIFont(size: 10, weight: .heavy))
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.07)))
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.white.opacity(0.10), lineWidth: 1))
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.07)))
-                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.white.opacity(0.10), lineWidth: 1))
+                    .buttonStyle(.plain)
+                    .foregroundColor(DS.Colors.textSecondary)
+                    .accessibilityLabel("Hatch a new cursor buddy")
+                    .help("Hatch a new cursor buddy")
                 }
-                .buttonStyle(.plain)
-                .foregroundColor(DS.Colors.textSecondary)
-                .accessibilityLabel("Hatch a new cursor buddy")
-                .help("Hatch a new cursor buddy")
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -1437,7 +1481,7 @@ extension OpenClickyNotchPanelView {
                     ForEach(petLibrary.pets) { pet in
                         avatarTileForPet(pet)
                     }
-                    if petLibrary.pets.isEmpty {
+                    if AppBundleConfiguration.isAgentModeEnabled, petLibrary.pets.isEmpty {
                         emptyBuddiesHintTile
                     }
                 }
@@ -2227,6 +2271,8 @@ extension OpenClickyNotchPanelView {
         quickPromptDroppedPathFragments.removeAll()
         if attachments.isEmpty {
             companionManager.submitTextPrompt(trimmedPrompt)
+        } else if !AppBundleConfiguration.isAgentModeEnabled {
+            companionManager.submitTextPrompt(promptWithAttachments(trimmedPrompt, attachments: attachments))
         } else {
             companionManager.submitNewAgentTaskFromUI(
                 promptWithAttachments(trimmedPrompt, attachments: attachments),

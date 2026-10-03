@@ -179,7 +179,7 @@ extension CompanionManager {
     /// historic name so menu-bar actions, deep links, and SDK callers all land
     /// on the new ChatWorkspace surface rather than a debug-only legacy HUD.
     func showCodexHUD(developerRequested _: Bool = false) {
-        guard isAdvancedModeEnabled else { return }
+        guard AppBundleConfiguration.isAgentModeEnabled, isAdvancedModeEnabled else { return }
         codexHUDWindowManager.show(
             companionManager: self,
             openMemory: { [weak self] in

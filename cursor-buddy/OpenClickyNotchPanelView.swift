@@ -194,7 +194,7 @@ struct OpenClickyNotchPanelView: View {
         self.setPanelPinned = setPanelPinned
         self.closePanel = closePanel
         _isPanelPinned = State(initialValue: isPanelPinned)
-        if let initialFocusedAgentSessionID {
+        if AppBundleConfiguration.isAgentModeEnabled, let initialFocusedAgentSessionID {
             _selectedTab = State(initialValue: .agents)
             _agentPanelSelection = State(initialValue: .sessions)
             _agentSessionFilter = State(initialValue: .active)
@@ -311,7 +311,7 @@ struct OpenClickyNotchPanelView: View {
         let nativeComputerUseStatus = companionManager.nativeComputerUseController.status
         let backgroundComputerUseStatus = companionManager.backgroundComputerUseController.status
 
-        return [
+        let rows: [OpenClickyNotchConnectionRow] = [
             OpenClickyNotchConnectionRow(
                 title: "Voice",
                 detail: "\(companionManager.buddyDictationManager.transcriptionProviderDisplayName) → \(companionManager.selectedTTSProvider.displayName) · \(speechModelLabel)",
@@ -355,7 +355,14 @@ struct OpenClickyNotchPanelView: View {
                 systemImageName: "wand.and.stars.inverse"
             )
         ]
+        guard !AppBundleConfiguration.isAgentModeEnabled else { return rows }
+        return rows.filter { !Self.agentOnlyConnectionTitles.contains($0.title) }
     }
+
+    /// Connection rows that only describe Agent Mode tooling.
+    private static let agentOnlyConnectionTitles: Set<String> = [
+        "Agent Mode", "Google Workspace", "Automations", "Skill Discovery"
+    ]
 
     var body: some View {
         resizeAwarePanel(panelLifecycle(panelDialogs(panelRoot)))
@@ -458,7 +465,9 @@ enum OpenClickyNotchTab: String, CaseIterable, Identifiable {
     case connections
     case settings
 
-    static let primaryTabs: [OpenClickyNotchTab] = [.home, .agents, .connections]
+    static let primaryTabs: [OpenClickyNotchTab] = AppBundleConfiguration.isAgentModeEnabled
+        ? [.home, .agents, .connections]
+        : [.home, .connections]
 
     var id: String { rawValue }
 
@@ -507,7 +516,7 @@ enum OpenClickyQuickPromptMode: Equatable {
     var subtitle: String {
         switch self {
         case .ask:
-            return "Menu-bar notch surface, existing fast voice stack, and quick local answers."
+            return "Ask about what is on your screen. OpenClicky explains it and points at it."
         case .agent:
             return "Write the task here, then press Return to launch an OpenClicky background agent."
         case .chat:

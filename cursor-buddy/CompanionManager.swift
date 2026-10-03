@@ -1054,13 +1054,17 @@ final class CompanionManager: ObservableObject {
     func submitHomeChatPromptFromUI(_ prompt: String, source: String = "open_clicky_panel_chat") {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty else { return }
+        guard AppBundleConfiguration.isAgentModeEnabled else {
+            submitTextPrompt(trimmedPrompt)
+            return
+        }
         setHomeChatModeActive(true, source: source)
         submitHomeChatPromptToAskAgent(trimmedPrompt, source: source)
     }
 
     @discardableResult
     private func submitHomeChatVoiceTranscriptIfNeeded(_ transcript: String, source: String) -> Bool {
-        guard isHomeChatModeActive else { return false }
+        guard AppBundleConfiguration.isAgentModeEnabled, isHomeChatModeActive else { return false }
         let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedTranscript.isEmpty else { return false }
         submitHomeChatPromptToAskAgent(trimmedTranscript, source: source)
@@ -1657,7 +1661,9 @@ final class CompanionManager: ObservableObject {
         let restoredArchiveIDs = ChatWorkspaceArchiveStore.load()
         archivedSessionIDs = restoredArchiveIDs
         let restoredArchivedSessions = Self.restoredArchivedSessions(from: restoredArchiveIDs)
-        let restoredInterruptedSessions = Self.restoredInterruptedSessions(archivedSessionIDs: restoredArchiveIDs)
+        let restoredInterruptedSessions = AppBundleConfiguration.isAgentModeEnabled
+            ? Self.restoredInterruptedSessions(archivedSessionIDs: restoredArchiveIDs)
+            : []
         codexAgentSessions = restoredInterruptedSessions + [initialAgentSession] + restoredArchivedSessions
         agentDockItems = Self.restoredInterruptedDockItems(from: restoredInterruptedSessions)
         activeCodexAgentSessionID = restoredInterruptedSessions.first?.id ?? initialAgentSession.id
@@ -1676,11 +1682,13 @@ final class CompanionManager: ObservableObject {
         wakeWordManager.onWakeWordDetected = { [weak self] transcript in
             self?.handleWakeWordDetected(transcript)
         }
-        // Bind the automation scheduler so cron / interval prompts can fire
-        // through this CompanionManager while the app is running.
-        OpenClickyAutomationStore.shared.bind(companion: self)
-        // Seed bundled built-in specialist agents on first launch.
-        OpenClickyAgentStore.shared.seedBuiltinsFromBundleIfNeeded()
+        if AppBundleConfiguration.isAgentModeEnabled {
+            // Bind the automation scheduler so cron / interval prompts can fire
+            // through this CompanionManager while the app is running.
+            OpenClickyAutomationStore.shared.bind(companion: self)
+            // Seed bundled built-in specialist agents on first launch.
+            OpenClickyAgentStore.shared.seedBuiltinsFromBundleIfNeeded()
+        }
     }
 
     /// Whether the blue cursor overlay is currently visible on screen.
@@ -2274,7 +2282,9 @@ final class CompanionManager: ObservableObject {
             startWakeWordListeningIfNeeded(reason: "startup")
         }
         bindAgentSessionObservation()
-        startRelaunchableAgentAutoResumeChecks()
+        if AppBundleConfiguration.isAgentModeEnabled {
+            startRelaunchableAgentAutoResumeChecks()
+        }
         if runtimeMode == .menuBar, !agentDockItems.isEmpty {
             showAgentDockWindowNearCurrentScreen()
         }
@@ -5062,7 +5072,8 @@ final class CompanionManager: ObservableObject {
                         self.recordRealtimeVoiceRouteFingerprint(Self.realtimeVoiceRouteFingerprint(instruction))
                         return true
                     }
-                    guard toolName == "openclicky_start_background_agent" else {
+                    guard AppBundleConfiguration.isAgentModeEnabled,
+                          toolName == "openclicky_start_background_agent" else {
                         return false
                     }
                     let instruction = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5537,10 +5548,11 @@ final class CompanionManager: ObservableObject {
         includeQuickLocalResponses: Bool,
         hybridAgentStartCountsAsHandled: Bool = false
     ) -> Bool {
-        if handleAgentCancellationRequestIfNeeded(from: transcript) {
+        let agentsEnabled = AppBundleConfiguration.isAgentModeEnabled
+        if agentsEnabled, handleAgentCancellationRequestIfNeeded(from: transcript) {
             return true
         }
-        if handleAgentStatusQuestionIfNeeded(from: transcript) {
+        if agentsEnabled, handleAgentStatusQuestionIfNeeded(from: transcript) {
             return true
         }
         if handleClearOverlayAnnotationsRequestIfNeeded(from: transcript) {
@@ -5555,22 +5567,22 @@ final class CompanionManager: ObservableObject {
         if Self.isScreenCalibrationRequest(transcript) {
             return false
         }
-        if handleAgentSelectionRequestIfNeeded(from: transcript, source: selectionSource) {
+        if agentsEnabled, handleAgentSelectionRequestIfNeeded(from: transcript, source: selectionSource) {
             return true
         }
-        if acceptPendingAgentOfferIfConfirmed(from: transcript) {
+        if agentsEnabled, acceptPendingAgentOfferIfConfirmed(from: transcript) {
             return true
         }
-        if submitPendingAgentVoiceFollowUp(transcript) {
+        if agentsEnabled, submitPendingAgentVoiceFollowUp(transcript) {
             return true
         }
-        if startHybridAgentTaskIfNeeded(from: transcript) {
+        if agentsEnabled, startHybridAgentTaskIfNeeded(from: transcript) {
             return hybridAgentStartCountsAsHandled
         }
-        if startExplicitAgentTaskIfRequested(from: transcript) {
+        if agentsEnabled, startExplicitAgentTaskIfRequested(from: transcript) {
             return true
         }
-        if startAgentTaskFromDeferredLiveAgentRouteIfNeeded(transcript) {
+        if agentsEnabled, startAgentTaskFromDeferredLiveAgentRouteIfNeeded(transcript) {
             return true
         }
         if handleDirectComputerUseRequest(from: transcript, source: directComputerUseSource) {
@@ -5579,13 +5591,13 @@ final class CompanionManager: ObservableObject {
         if includeQuickLocalResponses, handleQuickLocalVoiceResponseIfNeeded(from: transcript) {
             return true
         }
-        if submitContextualAgentFollowUp(transcript, source: source) {
+        if agentsEnabled, submitContextualAgentFollowUp(transcript, source: source) {
             return true
         }
-        if startSmartAgentTaskIfNeeded(from: transcript) {
+        if agentsEnabled, startSmartAgentTaskIfNeeded(from: transcript) {
             return true
         }
-        if startImplicitAgentTaskIfNeeded(from: transcript) {
+        if agentsEnabled, startImplicitAgentTaskIfNeeded(from: transcript) {
             return true
         }
         return false
@@ -5604,7 +5616,8 @@ final class CompanionManager: ObservableObject {
         guard trimmedTranscript.count >= 8 || isShortKnownAppRequest else { return }
 
         let shouldTraceMiss = Self.isPotentialDirectComputerUseTranscript(trimmedTranscript)
-        if Self.shouldDeferLiveComputerUseForAgentRoute(trimmedTranscript) {
+        if AppBundleConfiguration.isAgentModeEnabled,
+           Self.shouldDeferLiveComputerUseForAgentRoute(trimmedTranscript) {
             recordDeferredLiveAgentRoutePartial(trimmedTranscript)
             if shouldTraceMiss {
                 OpenClickyMessageLogStore.shared.append(
@@ -5863,6 +5876,7 @@ final class CompanionManager: ObservableObject {
         source: String,
         route: String = "agent.auto_escalate"
     ) -> Bool {
+        guard AppBundleConfiguration.isAgentModeEnabled else { return false }
         guard Self.shouldEscalateVoiceResponseToAgent(
             responseText: responseText,
             transcript: transcript
@@ -13387,6 +13401,7 @@ final class CompanionManager: ObservableObject {
         interruptVoiceResponse: Bool = false,
         voiceContextUserTranscript: String? = nil
     ) {
+        guard AppBundleConfiguration.isAgentModeEnabled else { return }
         let effectiveSpeakAcknowledgement: Bool
         if suppressNextVoiceAgentStartAcknowledgement {
             effectiveSpeakAcknowledgement = false
@@ -14871,6 +14886,10 @@ final class CompanionManager: ObservableObject {
     func submitNewAgentTaskFromUI(_ prompt: String, source: String = "agent_new_task_prompt") -> BrowserWorkspaceAgentSessionProtocol? {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty else { return nil }
+        guard AppBundleConfiguration.isAgentModeEnabled else {
+            submitTextPrompt(trimmedPrompt)
+            return nil
+        }
         var taskPrompt = trimmedPrompt
         if Self.isRawTransportDiagnosticEvent(trimmedPrompt) {
             // Typed/pasted prompts that mix user intent with log evidence
@@ -14968,6 +14987,10 @@ final class CompanionManager: ObservableObject {
     func submitAgentPromptFromUI(_ prompt: String) {
         let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPrompt.isEmpty else { return }
+        guard AppBundleConfiguration.isAgentModeEnabled else {
+            submitTextPrompt(trimmedPrompt)
+            return
+        }
         let timing = beginRequestTiming(source: "agent_hud_prompt", text: trimmedPrompt)
         activeRequestTiming = timing
         defer { activeRequestTiming = nil }
@@ -15871,10 +15894,22 @@ final class CompanionManager: ObservableObject {
         return context.promptFragment
     }
 
+    /// Overrides the Agent Mode wording in the base prompts when this build
+    /// ships without agents, so the model never promises background work.
+    private static var agentModeUnavailablePromptIfNeeded: String {
+        guard !AppBundleConfiguration.isAgentModeEnabled else { return "" }
+        return """
+
+        agent mode is not available:
+        this build has no Agent Mode, no background agents, and no task handoff. this overrides every earlier mention of agents, Agent Mode, or routing work to the background. never offer, promise, start, or confirm an agent, and never say "on it, starting an agent". if the user asks for something only tools could do, such as editing files, running commands, or fetching live web data, say plainly that you can only explain and point here, then help as far as explanation and pointing allow.
+        """
+    }
+
     func currentVoiceResponseSystemPrompt() -> String {
         let memoryContext = codexHomeManager.persistentMemoryContext()
         return """
         \(Self.companionVoiceResponseSystemPrompt)
+        \(Self.agentModeUnavailablePromptIfNeeded)
         \(inlineWebSearchCapabilityPromptIfAvailable())
         \(currentAppSkillContextPrompt())
         \(visualGuidanceCorrectionLearningPrompt())
@@ -16033,6 +16068,7 @@ final class CompanionManager: ObservableObject {
         let memoryContext = codexHomeManager.persistentMemoryContext()
         return """
         \(Self.companionRealtimeVoiceSystemPrompt)
+        \(Self.agentModeUnavailablePromptIfNeeded)
 
         \(currentRealtimeRoutingContextPrompt())
 

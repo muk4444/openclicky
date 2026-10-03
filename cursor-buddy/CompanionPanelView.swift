@@ -271,7 +271,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 14, weight: .bold))
                     .foregroundColor(DS.Colors.textPrimary)
 
-                Text("Permissions are ready. Start OpenClicky now, then choose local voice or agent provider details in Settings when you want them.")
+                Text("Permissions are ready. Start OpenClicky now, then choose voice and model details in Settings when you want them.")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(DS.Colors.textTertiary)
             }
@@ -300,7 +300,7 @@ struct CompanionPanelView: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(DS.Colors.textTertiary)
 
-                Text("Ask naturally. OpenClicky handles quick voice and computer-use requests itself, and hands deeper research, writing, coding, or file work to an agent in the background.")
+                Text("Ask naturally. OpenClicky explains what it sees and points at the place you need on screen.")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundColor(DS.Colors.textTertiary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -396,12 +396,14 @@ struct CompanionPanelView: View {
                 status: localSpeechModelManager.state(for: localSpeechModelManager.selectedVersion).label
             )
 
-            firstRunSetupRow(
-                systemImageName: "terminal",
-                title: "Codex",
-                detail: isCodexRuntimeDetected ? "Detected and ready for Agent Mode config." : "Not detected yet. You can still add an endpoint or key in Settings.",
-                status: isCodexRuntimeDetected ? "Detected" : "Optional"
-            )
+            if AppBundleConfiguration.isAgentModeEnabled {
+                firstRunSetupRow(
+                    systemImageName: "terminal",
+                    title: "Codex",
+                    detail: isCodexRuntimeDetected ? "Detected and ready for Agent Mode config." : "Not detected yet. You can still add an endpoint or key in Settings.",
+                    status: isCodexRuntimeDetected ? "Detected" : "Optional"
+                )
+            }
 
             firstRunSetupRow(
                 systemImageName: "sparkle.magnifyingglass",
@@ -415,7 +417,7 @@ struct CompanionPanelView: View {
                 title: "Apple On-Device",
                 detail: isAppleFoundationDetected
                     ? "Apple Intelligence is ready for private on-device replies."
-                    : "Requires macOS 26 with Apple Intelligence. Optional — use Claude or Codex instead.",
+                    : "Requires macOS 26 with Apple Intelligence. Optional — use Claude instead.",
                 status: isAppleFoundationDetected ? "Ready" : "Optional"
             )
 
@@ -1095,28 +1097,30 @@ struct CompanionPanelView: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(DS.Colors.textSecondary)
                 Spacer()
-                Button(action: { presentHatchSheet() }) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 9, weight: .semibold))
-                        Text("Hatch new")
-                            .font(.system(size: 10, weight: .semibold))
+                if AppBundleConfiguration.isAgentModeEnabled {
+                    Button(action: { presentHatchSheet() }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 9, weight: .semibold))
+                            Text("Hatch new")
+                                .font(.system(size: 10, weight: .semibold))
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.white.opacity(0.06))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.6)
+                                )
+                        )
+                        .foregroundColor(DS.Colors.textSecondary)
                     }
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 3)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .fill(Color.white.opacity(0.06))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .stroke(DS.Colors.borderSubtle, lineWidth: 0.6)
-                            )
-                    )
-                    .foregroundColor(DS.Colors.textSecondary)
+                    .buttonStyle(.plain)
+                    .pointerCursor()
+                    .help("Hatch a new buddy via Codex Agent Mode")
                 }
-                .buttonStyle(.plain)
-                .pointerCursor()
-                .help("Hatch a new buddy via Codex Agent Mode")
             }
 
             ScrollView(.horizontal, showsIndicators: false) {
@@ -1126,7 +1130,7 @@ struct CompanionPanelView: View {
                     ForEach(petLibrary.pets) { pet in
                         avatarTileForPet(pet)
                     }
-                    if petLibrary.pets.isEmpty {
+                    if AppBundleConfiguration.isAgentModeEnabled, petLibrary.pets.isEmpty {
                         emptyBuddiesHintTile
                     }
                 }
