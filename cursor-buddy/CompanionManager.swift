@@ -646,6 +646,20 @@ final class CompanionManager: ObservableObject {
     /// voice-response captions are enabled; this panel is the interactive path.
     let responseOverlayManager = CompanionResponseOverlayManager()
 
+    // Step-by-step walkthrough: OpenClicky names one click, waits until the
+    // user has made it, then looks at the screen again for the next one.
+    let guidedStepWatcher = GuidedStepClickWatcher()
+    /// What the user originally asked to be walked through. Non-nil while a
+    /// walkthrough is running.
+    var guidedStepGoal: String?
+    var guidedStepCount = 0
+    /// True while the walkthrough itself starts the next request, so that
+    /// request's own interruption does not end the walkthrough.
+    var isAdvancingGuidedStep = false
+    static let maximumGuidedSteps = 12
+    /// Time given to a menu or window to appear after the click.
+    static let guidedStepSettleNanoseconds: UInt64 = 700_000_000
+
     /// Anthropic API key for direct Claude requests.
     /// Environment fallback supports Xcode schemes and local launch scripts.
     private static let anthropicAPIKey = AppBundleConfiguration.anthropicAPIKey()
@@ -8758,6 +8772,100 @@ final class CompanionManager: ObservableObject {
         submitTextModePrompt(submittedText)
     }
 
+    // MARK: - Guided steps
+
+    /// Starts waiting for the user to click the spot the reply pointed at.
+    func armGuidedStep(target: CGPoint, label: String?, userTranscript: String) {
+        guard guidedStepCount < Self.maximumGuidedSteps else {
+            endGuidedSteps(reason: "step_limit", releasesHold: true)
+            return
+        }
+        // A follow-up step carries OpenClicky's own prompt as its transcript;
+        // the goal stays what the user asked for at the start.
+        let goal = guidedStepGoal ?? userTranscript
+        guidedStepGoal = goal
+        guidedStepCount += 1
+        let stepNumber = guidedStepCount
+        let stepLabel = label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        guidedStepWatcher.arm(
+            target: target,
+            onClick: { [weak self] in
+                self?.advanceGuidedStep(clickedLabel: stepLabel, stepNumber: stepNumber)
+            },
+            onTimeout: { [weak self] in
+                self?.endGuidedSteps(reason: "timeout", releasesHold: true)
+            }
+        )
+        OpenClickyMessageLogStore.shared.append(
+            lane: "voice",
+            direction: "internal",
+            event: "voice.guided_step.waiting_for_click",
+            fields: [
+                "step": stepNumber,
+                "label": stepLabel,
+                "targetX": Int(target.x.rounded()),
+                "targetY": Int(target.y.rounded())
+            ]
+        )
+    }
+
+    /// The user clicked the pointed spot: let the screen settle, then ask for
+    /// the next step with a fresh screenshot.
+    private func advanceGuidedStep(clickedLabel: String, stepNumber: Int) {
+        guard let goal = guidedStepGoal else { return }
+        OpenClickyMessageLogStore.shared.append(
+            lane: "voice",
+            direction: "incoming",
+            event: "voice.guided_step.clicked",
+            fields: [
+                "step": stepNumber,
+                "label": clickedLabel
+            ]
+        )
+
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.guidedStepSettleNanoseconds)
+            await MainActor.run {
+                guard let self,
+                      self.guidedStepGoal == goal,
+                      self.guidedStepCount == stepNumber,
+                      !self.buddyDictationManager.isDictationInProgress else { return }
+                let clickedDescription = clickedLabel.isEmpty ? "the spot you pointed at" : "\"\(clickedLabel)\""
+                let prompt = """
+                [guided step] The user has now clicked \(clickedDescription). Their goal is: "\(goal)". Look at the new screenshot and give only the next single step, in the same language as your last reply. If the goal is reached or nothing is left to click, say so in one short sentence and do not add [STEP:click].
+                """
+                let requestTiming = self.beginRequestTiming(source: "guided_step", text: prompt)
+                self.activeRequestTiming = requestTiming
+                self.isAdvancingGuidedStep = true
+                self.sendTranscriptToClaudeWithScreenshot(transcript: prompt)
+                self.isAdvancingGuidedStep = false
+                self.activeRequestTiming = nil
+            }
+        }
+    }
+
+    /// Stops a running walkthrough. Does nothing when none is running.
+    func endGuidedSteps(reason: String, releasesHold: Bool) {
+        guard guidedStepGoal != nil || guidedStepWatcher.isArmed else { return }
+        guidedStepWatcher.disarm()
+        let completedSteps = guidedStepCount
+        guidedStepGoal = nil
+        guidedStepCount = 0
+        if releasesHold, detectedElementHoldActive {
+            detectedElementHoldActive = false
+        }
+        OpenClickyMessageLogStore.shared.append(
+            lane: "voice",
+            direction: "internal",
+            event: "voice.guided_step.ended",
+            fields: [
+                "reason": reason,
+                "steps": completedSteps
+            ]
+        )
+    }
+
     private func submitTextModePrompt(_ submittedText: String) {
         let trimmedText = submittedText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else { return }
@@ -15272,6 +15380,11 @@ final class CompanionManager: ObservableObject {
         if detectedElementHoldActive {
             detectedElementHoldActive = false
         }
+        // A new question, Escape, or any other interruption ends a
+        // walkthrough. Its own next step is the one exception.
+        if !isAdvancingGuidedStep {
+            endGuidedSteps(reason: "interrupted", releasesHold: false)
+        }
         clearVoiceResponseCaptionAndInteractiveBubble()
         if !buddyDictationManager.isDictationInProgress {
             currentAudioPowerLevel = 0
@@ -15976,6 +16089,20 @@ final class CompanionManager: ObservableObject {
     example with three targets: "im ersten satz steht hause statt haus. [POINT:412,233:hause] weiter unten fehlt bei dass ein s. [POINT:388,301:das] und in der letzten zeile ist morgen klein geschrieben. [POINT:540,366:morgen]"
     """
 
+    /// Lets OpenClicky walk the user through a path of clicks one step at a
+    /// time, continuing by itself after each click.
+    private static let guidedStepsPrompt = """
+
+    step-by-step walkthroughs:
+    when the user asks how to get somewhere or do something that takes several clicks through menus, windows, or dialogs, for example "show me the way", "zeig mir den weg", "wie komme ich zu", "führ mich durch", do not explain the whole path at once. give only the next single step: say in one short sentence what to click, point at it with a POINT tag, and then add the private tag [STEP:click] as the very last thing in your reply. OpenClicky then waits until the user has clicked that spot, takes a new screenshot, and asks you for the next step.
+
+    such a follow-up reaches you as a message that starts with "[guided step]". look at the new screenshot and again give only the next single step with a POINT tag and [STEP:click]. base the step on what the screenshot really shows now, not on what you expected to appear. if the click did not have the expected effect, say so briefly and point at the right spot again. when the goal is reached, or nothing is left to click, say so in one short sentence, end with [POINT:none], and do not add [STEP:click].
+
+    never add [STEP:click] without a POINT tag with real coordinates in the same reply, and use only one POINT tag in a walkthrough step. never speak or describe these tags. for anything that is not a path of several clicks, such as explaining what something is or pointing out things on screen, never use [STEP:click].
+
+    example of one walkthrough step: "klick oben links auf live, direkt neben dem apfel. [POINT:62,11:live menu] [STEP:click]"
+    """
+
     /// Overrides the Agent Mode wording in the base prompts when this build
     /// ships without agents, so the model never promises background work.
     private static var agentModeUnavailablePromptIfNeeded: String {
@@ -15992,6 +16119,7 @@ final class CompanionManager: ObservableObject {
         return """
         \(Self.companionVoiceResponseSystemPrompt)
         \(Self.multipleVisualTargetsPrompt)
+        \(Self.guidedStepsPrompt)
         \(Self.agentModeUnavailablePromptIfNeeded)
         \(inlineWebSearchCapabilityPromptIfAvailable())
         \(currentAppSkillContextPrompt())

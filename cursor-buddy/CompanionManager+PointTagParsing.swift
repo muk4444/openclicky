@@ -48,7 +48,7 @@ extension CompanionManager {
         guard !fragment.contains("]") else { return text }
 
         let upperFragment = fragment.uppercased()
-        let visualPrefixes = ["[POINT", "[RECT", "[SCRIBBLE"]
+        let visualPrefixes = ["[POINT", "[RECT", "[SCRIBBLE", "[STEP"]
         let isPartialVisualTag = visualPrefixes.contains { prefix in
             prefix.hasPrefix(upperFragment) || upperFragment.hasPrefix(prefix + ":")
         }
@@ -81,7 +81,7 @@ extension CompanionManager {
     /// left untouched (no trimming or collapsing), so a streamed response
     /// always extends the text extracted from its earlier, shorter state.
     static func extractInlineVisualGuidanceTags(from text: String) -> (spokenText: String, tags: [InlineVisualGuidanceTag]) {
-        let pattern = #"\[(?:POINT|RECT|SCRIBBLE):[^\]\[]*\]"#
+        let pattern = #"\[(?:POINT|RECT|SCRIBBLE|STEP):[^\]\[]*\]"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
             return (text, [])
         }
@@ -99,13 +99,28 @@ extension CompanionManager {
                 InlineVisualGuidanceTag(
                     text: tagText,
                     spokenOffset: spokenText.count,
-                    isActionable: tagText.uppercased() != "[POINT:NONE]"
+                    isActionable: isActionableVisualGuidanceTag(tagText)
                 )
             )
             cursor = range.upperBound
         }
         spokenText += text[cursor...]
         return (spokenText, tags)
+    }
+
+    /// `[POINT:none]` carries no target, and `[STEP:...]` is a control marker
+    /// for step-by-step walkthroughs rather than something to show.
+    private static func isActionableVisualGuidanceTag(_ tagText: String) -> Bool {
+        let upper = tagText.uppercased()
+        return upper != "[POINT:NONE]" && !upper.hasPrefix("[STEP:")
+    }
+
+    /// True when the reply ends a walkthrough step and asks OpenClicky to
+    /// wait for the user to click the pointed spot before continuing.
+    static func responseAwaitsGuidedClick(_ responseText: String) -> Bool {
+        extractInlineVisualGuidanceTags(from: responseText).tags.contains { tag in
+            tag.text.uppercased().hasPrefix("[STEP:")
+        }
     }
 
     /// Parses the visual-guidance tags in Claude's response. A response may

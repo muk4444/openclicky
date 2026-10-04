@@ -278,7 +278,11 @@ extension CompanionManager {
                 // sound unnatural on short replies ("one moment. sounds
                 // good..."). Screen/visual turns still benefit from a
                 // neutral filler while capture + vision processing happens.
-                let shouldUseFiller = Self.shouldUsePreResponseFiller(
+                // A walkthrough step follows a click, not a question, so an
+                // opener such as "one moment" before every step would only
+                // get in the way.
+                let isGuidedStepFollowUp = transcript.hasPrefix("[guided step]")
+                let shouldUseFiller = !isGuidedStepFollowUp && Self.shouldUsePreResponseFiller(
                     transcript: transcript,
                     screenContextNeeded: hasVisualContext,
                     modelProvider: OpenClickyModelCatalog.voiceResponseModel(withID: visualAnalysisModelID).provider,
@@ -540,6 +544,22 @@ extension CompanionManager {
                         spokenText: spokenText,
                         screenCaptures: screenCaptures
                     )
+                }
+
+                // Step-by-step walkthrough: the reply named one click and asked
+                // to wait for it. Watch for that click; the next step follows
+                // from a fresh screenshot once it happens.
+                if Self.responseAwaitsGuidedClick(fullResponseText),
+                   let pointCoordinate = parseResult.coordinate,
+                   let targetCapture = self.pointingTargetCapture(for: parseResult, screenCaptures: screenCaptures),
+                   let clickTarget = self.globalPointingLocation(for: pointCoordinate, in: targetCapture) {
+                    self.armGuidedStep(
+                        target: clickTarget,
+                        label: parseResult.elementLabel,
+                        userTranscript: transcript
+                    )
+                } else {
+                    self.endGuidedSteps(reason: "reply_without_step", releasesHold: false)
                 }
 
                 // Save this exchange to conversation history (with the point tag
@@ -1569,6 +1589,46 @@ extension CompanionManager {
         applyVisualGuidance(parseResult, screenCaptures: screenCaptures, holdsUntilReplyEnds: true)
     }
 
+    /// Picks the screen capture a parsed tag refers to. A screenNumber tag is
+    /// a deliberate signal and wins. Without one, use the screen the cursor
+    /// is on right now (not the stale flag from capture time), and only then
+    /// the captured cursor-screen flag.
+    func pointingTargetCapture(
+        for parseResult: PointingParseResult,
+        screenCaptures: [CompanionScreenCapture]
+    ) -> CompanionScreenCapture? {
+        if let screenNumber = parseResult.screenNumber,
+           screenNumber >= 1 && screenNumber <= screenCaptures.count {
+            return screenCaptures[screenNumber - 1]
+        }
+        let liveMouseLocation = NSEvent.mouseLocation
+        return screenCaptures.first { $0.displayFrame.contains(liveMouseLocation) }
+            ?? screenCaptures.first(where: { $0.isCursorScreen })
+    }
+
+    /// Converts a coordinate in a screenshot's pixel space (top-left origin)
+    /// into AppKit global screen coordinates.
+    func globalPointingLocation(for pointCoordinate: CGPoint, in capture: CompanionScreenCapture) -> CGPoint? {
+        let screenshotWidth = CGFloat(capture.screenshotWidthInPixels)
+        let screenshotHeight = CGFloat(capture.screenshotHeightInPixels)
+        let displayWidth = CGFloat(capture.displayWidthInPoints)
+        let displayHeight = CGFloat(capture.displayHeightInPoints)
+        let displayFrame = capture.displayFrame
+        guard screenshotWidth > 0, screenshotHeight > 0 else { return nil }
+
+        let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
+        let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
+        let displayLocalX = clampedX * (displayWidth / screenshotWidth)
+        let displayLocalY = clampedY * (displayHeight / screenshotHeight)
+        let appKitY = displayHeight - displayLocalY
+
+        let calibrationOffset = Self.visualGuidanceCalibrationOffset(for: displayFrame)
+        return CGPoint(
+            x: displayLocalX + displayFrame.origin.x + calibrationOffset.width,
+            y: appKitY + displayFrame.origin.y + calibrationOffset.height
+        )
+    }
+
     /// Moves the buddy to the parsed target, or draws the parsed overlay.
     /// Returns false when the tag carried nothing to show.
     @discardableResult
@@ -1577,46 +1637,15 @@ extension CompanionManager {
         screenCaptures: [CompanionScreenCapture],
         holdsUntilReplyEnds: Bool
     ) -> Bool {
-        // Pick the screen capture to point on. A screenNumber tag is a
-        // deliberate signal and wins. Without one, use the screen the cursor
-        // is on right now (not the stale flag from capture time), and only
-        // then the captured cursor-screen flag.
-        let liveMouseLocation = NSEvent.mouseLocation
-        let liveCursorCapture = screenCaptures.first { capture in
-            capture.displayFrame.contains(liveMouseLocation)
+        guard let targetScreenCapture = pointingTargetCapture(for: parseResult, screenCaptures: screenCaptures) else {
+            return false
         }
-        let targetScreenCapture: CompanionScreenCapture? = {
-            if let screenNumber = parseResult.screenNumber,
-               screenNumber >= 1 && screenNumber <= screenCaptures.count {
-                return screenCaptures[screenNumber - 1]
-            }
-            return liveCursorCapture
-                ?? screenCaptures.first(where: { $0.isCursorScreen })
-        }()
-        guard let targetScreenCapture else { return false }
 
         if let pointCoordinate = parseResult.coordinate {
-            // Claude's coordinates are in the screenshot's pixel space
-            // (top-left origin). Scale to the display's point space, then
-            // convert to AppKit global coordinates.
-            let screenshotWidth = CGFloat(targetScreenCapture.screenshotWidthInPixels)
-            let screenshotHeight = CGFloat(targetScreenCapture.screenshotHeightInPixels)
-            let displayWidth = CGFloat(targetScreenCapture.displayWidthInPoints)
-            let displayHeight = CGFloat(targetScreenCapture.displayHeightInPoints)
+            guard let globalLocation = globalPointingLocation(for: pointCoordinate, in: targetScreenCapture) else {
+                return false
+            }
             let displayFrame = targetScreenCapture.displayFrame
-            guard screenshotWidth > 0, screenshotHeight > 0 else { return false }
-
-            let clampedX = max(0, min(pointCoordinate.x, screenshotWidth))
-            let clampedY = max(0, min(pointCoordinate.y, screenshotHeight))
-            let displayLocalX = clampedX * (displayWidth / screenshotWidth)
-            let displayLocalY = clampedY * (displayHeight / screenshotHeight)
-            let appKitY = displayHeight - displayLocalY
-
-            let calibrationOffset = Self.visualGuidanceCalibrationOffset(for: displayFrame)
-            let globalLocation = CGPoint(
-                x: displayLocalX + displayFrame.origin.x + calibrationOffset.width,
-                y: appKitY + displayFrame.origin.y + calibrationOffset.height
-            )
 
             if holdsUntilReplyEnds {
                 detectedElementHoldActive = true
@@ -1655,6 +1684,9 @@ extension CompanionManager {
     /// keeps the last target visible for a moment after the voice stops.
     func releasePointingHoldAfterReply() {
         guard detectedElementHoldActive else { return }
+        // During a walkthrough the buddy stays on the spot to click until the
+        // click happens.
+        guard !guidedStepWatcher.isArmed else { return }
         let sessionID = activePointingCueSessionID
         Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_200_000_000)
