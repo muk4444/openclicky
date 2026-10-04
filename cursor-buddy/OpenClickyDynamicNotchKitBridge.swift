@@ -776,7 +776,7 @@ private struct OpenClickyDynamicNotchKitCompactTrailingView: View {
         // running. Listening, thinking and speaking are shown at the cursor
         // buddy instead, so nothing here reacts to the voice state.
         HStack {
-            OpenClickyDynamicNotchKitLogo(color: Color(nsColor: model.accentColor))
+            OpenClickyDynamicNotchKitLogo()
         }
         .frame(width: compactWidth, height: 24, alignment: .trailing)
         .contentShape(Rectangle())
@@ -1378,17 +1378,28 @@ private struct OpenClickyDynamicNotchKitDots: View {
     }
 }
 
-/// OpenClicky's mark in the compact notch: the same triangle as the cursor
-/// buddy, in the same shape, tilt and colour. Deliberately static.
+/// OpenClicky's mark in the compact notch: the logo artwork from the asset
+/// catalog (`OpenClickyNotchLogo`). It is drawn as a template, so only its
+/// shape is used and it takes the selected cursor colour, whichever one
+/// that is. Deliberately static. The triangle shape below is kept so the
+/// earlier cursor-triangle badge can be restored by swapping the body back.
 private struct OpenClickyDynamicNotchKitLogo: View {
-    let color: Color
+    /// Read straight from the setting, the same way the cursor buddy does,
+    /// so the logo recolours the moment the cursor colour is changed.
+    @AppStorage(ClickyAccentTheme.userDefaultsKey) var selectedAccentThemeID = ClickyAccentTheme.blue.rawValue
+
+    private var color: Color {
+        (ClickyAccentTheme(rawValue: selectedAccentThemeID) ?? .blue).cursorColor
+    }
 
     var body: some View {
-        OpenClickyDynamicNotchKitTriangleShape()
-            .fill(color)
-            .aspectRatio(0.86, contentMode: .fit)
-            .frame(height: 16)
-            .rotationEffect(.degrees(12))
+        Image("OpenClickyNotchLogo")
+            .renderingMode(.template)
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .frame(height: 18)
+            .foregroundStyle(color)
     }
 }
 
