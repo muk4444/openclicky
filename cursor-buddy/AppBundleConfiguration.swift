@@ -16,6 +16,9 @@ nonisolated enum AppBundleConfiguration {
     static let userCartesiaVoiceIDDefaultsKey = "openClickyCartesiaVoiceID"
     static let userMistralAPIKeyDefaultsKey = "openClickyMistralAPIKey"
     static let userMistralVoiceIDDefaultsKey = "openClickyMistralVoiceID"
+    /// When false, replies are not spoken: OpenClicky still points and
+    /// highlights, and shows a short text at the cursor instead.
+    static let userSpokenRepliesPreferredDefaultsKey = "openClickySpokenRepliesPreferred"
     static let userOpenAIRealtimeVoiceIDDefaultsKey = "openClickyOpenAIRealtimeVoiceID"
     static let userMicrosoftEdgeVoiceIDDefaultsKey = "openClickyMicrosoftEdgeVoiceID"
     /// Deepgram TTS reuses the existing Deepgram STT API key
@@ -301,6 +304,10 @@ nonisolated enum AppBundleConfiguration {
             environmentKeys: ["OPENAI_REALTIME_VOICE_ID"]
         ) ?? localDevelopmentEnvironmentValue(forKey: "OPENAI_REALTIME_VOICE_ID")
         ?? "cedar"
+    }
+
+    static func prefersSpokenReplies() -> Bool {
+        userDefaultsBool(forKey: userSpokenRepliesPreferredDefaultsKey, defaultValue: true)
     }
 
     static func mistralAPIKey() -> String? {

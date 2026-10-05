@@ -15839,6 +15839,14 @@ final class CompanionManager: ObservableObject {
         if interruptExisting {
             interruptCurrentVoiceResponse()
         }
+        // With spoken replies switched off, short system lines are shown at
+        // the cursor instead of being spoken.
+        guard AppBundleConfiguration.prefersSpokenReplies() else {
+            updateVoiceResponseCaption(text, force: true)
+            scheduleVoiceResponseCaptionClear(after: 4.0)
+            voiceState = .idle
+            return
+        }
         let responseTaskToken = UUID()
         currentResponseTaskToken = responseTaskToken
         currentResponseTask = Task {
@@ -16089,6 +16097,17 @@ final class CompanionManager: ObservableObject {
     example with three targets: "im ersten satz steht hause statt haus. [POINT:412,233:hause] weiter unten fehlt bei dass ein s. [POINT:388,301:das] und in der letzten zeile ist morgen klein geschrieben. [POINT:540,366:morgen]"
     """
 
+    /// Tells the model its reply is read, not heard, when spoken replies are
+    /// switched off.
+    private static var silentRepliesPromptIfNeeded: String {
+        guard !AppBundleConfiguration.prefersSpokenReplies() else { return "" }
+        return """
+
+        spoken replies are switched off:
+        this overrides the instructions above about being spoken aloud. your reply is not spoken. it is shown as a small text bubble next to the cursor, one sentence at a time. so write as little as possible: when pointing or highlighting answers the request, one very short sentence per target is enough. when the user needs information that pointing cannot give, answer in at most two short sentences. no greetings, no filler, no follow-up questions. pointing, highlighting, several targets in one reply, and step-by-step walkthroughs all work exactly as described above, and every tag still goes right after the sentence it belongs to.
+        """
+    }
+
     /// Lets OpenClicky walk the user through a path of clicks one step at a
     /// time, continuing by itself after each click.
     private static let guidedStepsPrompt = """
@@ -16120,6 +16139,7 @@ final class CompanionManager: ObservableObject {
         \(Self.companionVoiceResponseSystemPrompt)
         \(Self.multipleVisualTargetsPrompt)
         \(Self.guidedStepsPrompt)
+        \(Self.silentRepliesPromptIfNeeded)
         \(Self.agentModeUnavailablePromptIfNeeded)
         \(inlineWebSearchCapabilityPromptIfAvailable())
         \(currentAppSkillContextPrompt())

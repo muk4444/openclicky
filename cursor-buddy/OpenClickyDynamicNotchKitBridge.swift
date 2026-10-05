@@ -800,6 +800,9 @@ private struct OpenClickyDynamicNotchKitCompactTrailingView: View {
 private struct OpenClickyDynamicNotchKitExpandedView: View {
     @ObservedObject var model: OpenClickyDynamicNotchKitModel
     @Environment(\.colorScheme) private var colorScheme
+    /// On: replies are spoken. Off: no speech, OpenClicky points and shows
+    /// a short text at the cursor. Read by the response pipeline per request.
+    @AppStorage(AppBundleConfiguration.userSpokenRepliesPreferredDefaultsKey) var spokenRepliesPreferred = true
 
     private var expandedWidth: CGFloat {
         model.contextSuggestion == nil ? 560 : 760
@@ -854,10 +857,28 @@ private struct OpenClickyDynamicNotchKitExpandedView: View {
             }
             .frame(height: 34, alignment: .center)
 
-            quickActionChips
+            HStack(spacing: 8) {
+                quickActionChips
+                spokenRepliesToggle
+            }
 
             OpenClickyDynamicNotchKitInputRow(model: model)
         }
+    }
+
+    private var spokenRepliesToggle: some View {
+        Toggle(isOn: $spokenRepliesPreferred) {
+            Text("Gesprochene Antworten bevorzugen")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(primaryTextColor.opacity(0.78))
+                .lineLimit(1)
+        }
+        .toggleStyle(.switch)
+        .controlSize(.mini)
+        .tint(Color(nsColor: model.accentColor))
+        .fixedSize()
+        .help("An: Antworten werden gesprochen. Aus: keine Sprachausgabe, OpenClicky zeigt und blendet einen kurzen Text am Cursor ein.")
+        .accessibilityLabel("Gesprochene Antworten bevorzugen")
     }
 
     private var quickActionChips: some View {

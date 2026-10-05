@@ -491,6 +491,8 @@ struct BlueCursorView: View {
     @ObservedObject var cursorState: CursorOverlayState
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
     @AppStorage(ClickyAccentTheme.userDefaultsKey) private var selectedAccentThemeID = ClickyAccentTheme.mint.rawValue
+    /// Off means replies are shown as text at the cursor instead of spoken.
+    @AppStorage(AppBundleConfiguration.userSpokenRepliesPreferredDefaultsKey) private var spokenRepliesPreferred = true
     @AppStorage(ClickyCursorAvatarSizePreference.userDefaultsKey) private var cursorAvatarSizeScale = ClickyCursorAvatarSizePreference.defaultScale
     @AppStorage(AppBundleConfiguration.userVoiceResponseCaptionFontDefaultsKey) private var voiceResponseCaptionFontRawValue = OpenClickyResponseCaptionFont.fallback.rawValue
     @AppStorage(AppBundleConfiguration.userVoiceResponseCaptionOpacityDefaultsKey) private var voiceResponseCaptionOpacity = AppBundleConfiguration.defaultVoiceResponseCaptionOpacity
@@ -547,6 +549,9 @@ struct BlueCursorView: View {
     @State private var navigationBubbleText: String = ""
     @State private var navigationBubbleOpacity: Double = 0.0
     @State private var navigationBubbleSize: CGSize = .zero
+    /// Estimated width of the finished label, so the side it sits on is
+    /// decided once and does not flip while the text is still typing out.
+    @State private var navigationBubbleEstimatedFullWidth: CGFloat = 0
 
     /// The cursor position at the moment navigation started, used to detect
     /// if the user moves the cursor enough to cancel the navigation.
@@ -716,7 +721,7 @@ struct BlueCursorView: View {
                     )
                     .scaleEffect(navigationBubbleScale)
                     .opacity(navigationBubbleOpacity)
-                    .position(x: cursorPosition.x + 10 + (navigationBubbleSize.width / 2), y: cursorPosition.y + 18)
+                    .position(navigationBubblePosition)
                     .animation(cursorFollowAnimation, value: cursorPosition)
                     .animation(.spring(response: 0.4, dampingFraction: 0.6), value: navigationBubbleScale)
                     .animation(.easeOut(duration: 0.5), value: navigationBubbleOpacity)
@@ -728,10 +733,13 @@ struct BlueCursorView: View {
             if let externalPrimaryCaption = cursorState.externalPrimaryCaptionText?.trimmingCharacters(in: .whitespacesAndNewlines),
                !externalPrimaryCaption.isEmpty,
                buddyIsVisibleOnThisScreen {
+                // The target label bubble sits right under the cursor while
+                // pointing, so the reply text moves one row further down.
                 externalCaption(
                     externalPrimaryCaption,
                     at: cursorPosition,
-                    color: externalPrimaryCaptionColor
+                    color: externalPrimaryCaptionColor,
+                    verticalOffset: buddyNavigationMode == .pointingAtTarget && !navigationBubbleText.isEmpty ? 38 : 20
                 )
             }
 
@@ -839,7 +847,7 @@ struct BlueCursorView: View {
                     y: 0
                 )
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen && (cursorState.voiceState == .idle || isPointingWhileResponding) ? cursorOpacity : 0)
+                .opacity(buddyIsVisibleOnThisScreen && (cursorState.voiceState == .idle || isPointingWhileResponding || isShowingSilentReply) ? cursorOpacity : 0)
                 .position(cursorPosition)
                 .animation(
                     buddyNavigationMode == .followingCursor
@@ -996,11 +1004,36 @@ struct BlueCursorView: View {
         }
     }
 
+    /// The target label normally sits to the right of the buddy. Near the
+    /// right screen edge it moves to the left side so it stays readable.
+    private var navigationBubblePosition: CGPoint {
+        let margin: CGFloat = 8
+        let halfWidth = navigationBubbleSize.width / 2
+        let halfHeight = navigationBubbleSize.height / 2
+        let fullWidth = max(navigationBubbleEstimatedFullWidth, navigationBubbleSize.width)
+
+        var x = cursorPosition.x + 10 + halfWidth
+        if cursorPosition.x + 10 + fullWidth > screenFrame.width - margin {
+            x = cursorPosition.x - 10 - halfWidth
+        }
+        x = min(max(x, halfWidth + margin), max(halfWidth + margin, screenFrame.width - halfWidth - margin))
+
+        let y = min(cursorPosition.y + 18, max(halfHeight + margin, screenFrame.height - halfHeight - margin))
+        return CGPoint(x: x, y: y)
+    }
+
     /// Speaking with the buddy parked at the cursor: show the waveform.
     private var isSpeakingAtCursor: Bool {
         buddyIsVisibleOnThisScreen
+            && spokenRepliesPreferred
             && cursorState.voiceState == .responding
             && buddyNavigationMode == .followingCursor
+    }
+
+    /// Replying without sound: there is nothing for the waveform to show, so
+    /// the mascot stays and the reply text sits next to it.
+    private var isShowingSilentReply: Bool {
+        !spokenRepliesPreferred && cursorState.voiceState == .responding
     }
 
     /// Speaking while flying to or pointing at a target: keep the mascot.
@@ -1171,13 +1204,15 @@ struct BlueCursorView: View {
     }
 
     @ViewBuilder
-    private func externalCaption(_ caption: String, at position: CGPoint, color: Color) -> some View {
-        let providerBadge = companionManager.selectedVoiceBackendFamily?.displayName
+    private func externalCaption(_ caption: String, at position: CGPoint, color: Color, verticalOffset: CGFloat = 20) -> some View {
+        // The silent reply text is the answer itself, so it carries no
+        // provider label above it.
+        let providerBadge = spokenRepliesPreferred ? companionManager.selectedVoiceBackendFamily?.displayName : nil
         let bubblePosition = anchoredBubblePosition(
             for: position,
             bubbleSize: estimatedExternalCaptionBubbleSize(for: caption, providerBadge: providerBadge),
             horizontalOffset: 12,
-            verticalOffset: 20
+            verticalOffset: verticalOffset
         )
 
         VStack(alignment: .leading, spacing: 3) {
@@ -1583,6 +1618,8 @@ struct BlueCursorView: View {
         let pointerPhrase = cursorState.detectedElementBubbleText
             ?? navigationPointerPhrases.randomElement()
             ?? "right here!"
+
+        navigationBubbleEstimatedFullWidth = CGFloat(pointerPhrase.count) * 6.4 + 18
 
         streamNavigationBubbleCharacter(phrase: pointerPhrase, characterIndex: 0, generation: generation) {
             // All characters streamed — hold for 3 seconds, then fly back

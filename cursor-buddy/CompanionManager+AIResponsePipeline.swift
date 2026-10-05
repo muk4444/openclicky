@@ -282,7 +282,10 @@ extension CompanionManager {
                 // opener such as "one moment" before every step would only
                 // get in the way.
                 let isGuidedStepFollowUp = transcript.hasPrefix("[guided step]")
-                let shouldUseFiller = !isGuidedStepFollowUp && Self.shouldUsePreResponseFiller(
+                // With spoken replies switched off there is no audio at all,
+                // so there is nothing for an opener to cover either.
+                let spokenRepliesEnabled = AppBundleConfiguration.prefersSpokenReplies()
+                let shouldUseFiller = spokenRepliesEnabled && !isGuidedStepFollowUp && Self.shouldUsePreResponseFiller(
                     transcript: transcript,
                     screenContextNeeded: hasVisualContext,
                     modelProvider: OpenClickyModelCatalog.voiceResponseModel(withID: visualAnalysisModelID).provider,
@@ -324,7 +327,7 @@ extension CompanionManager {
                 // parallel and plays them in order. First audio reaches
                 // the speaker as soon as the FIRST sentence completes,
                 // not after the whole response.
-                let streamingTTSSession = self.voiceTTSClient.beginStreamingResponse {
+                let onReplyPlaybackStarted: @MainActor () -> Void = {
                     guard !didMarkAudioStarted else { return }
                     didMarkAudioStarted = true
                     self.voiceState = .responding
@@ -345,6 +348,17 @@ extension CompanionManager {
                         ]
                     )
                 }
+                // A spoken reply goes through the TTS provider. With spoken
+                // replies switched off, a silent session shows each sentence
+                // at the cursor instead and keeps pointing in step with it.
+                let streamingTTSSession: StreamingTTSSession = spokenRepliesEnabled
+                    ? self.voiceTTSClient.beginStreamingResponse(onPlaybackStarted: onReplyPlaybackStarted)
+                    : StreamingTTSSession.silent(
+                        onPlaybackStarted: onReplyPlaybackStarted,
+                        onSentenceShown: { [weak self] sentence in
+                            self?.updateVoiceResponseCaption(sentence, force: true)
+                        }
+                    )
 
                 // Schedule the pre-baked filler after a short natural
                 // thinking beat. The first LLM sentence enqueues behind
@@ -635,6 +649,10 @@ extension CompanionManager {
 
                     do {
                         try await streamingTTSSession.finish()
+                        if !spokenRepliesEnabled {
+                            // The last sentence has had its reading time.
+                            self.scheduleVoiceResponseCaptionClear(after: 1.5)
+                        }
                         guard !Task.isCancelled else {
                             await completeRequest(
                                 status: "cancelled",

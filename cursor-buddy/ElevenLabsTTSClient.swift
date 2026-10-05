@@ -556,6 +556,60 @@ final class StreamingTTSSession {
     /// First sentence enqueued since the previous cue. A cue belongs to the
     /// whole stretch of speech that leads up to its tag.
     private var firstSentenceIndexOfCurrentSpan: Int?
+
+    /// Set for a silent session: sentences are shown as text instead of
+    /// being spoken, each for about as long as it takes to read.
+    private var silentSentenceHandler: (@MainActor (String) -> Void)?
+
+    /// A session that plays no audio. It keeps the same sentence order and
+    /// cue timing as a spoken reply, pacing itself by reading time, and hands
+    /// each sentence to `onSentenceShown` when its turn comes.
+    static func silent(
+        onPlaybackStarted: @escaping @MainActor () -> Void,
+        onSentenceShown: @escaping @MainActor (String) -> Void
+    ) -> StreamingTTSSession {
+        let session = StreamingTTSSession(
+            fetchSamples: { _ in [] },
+            playerNode: nil,
+            format: nil,
+            sampleRate: 24_000,
+            onPlaybackStarted: onPlaybackStarted
+        )
+        session.silentSentenceHandler = onSentenceShown
+        return session
+    }
+
+    /// Roughly how long a sentence needs to be read.
+    private static func silentDisplayNanoseconds(for text: String) -> UInt64 {
+        let seconds = min(8.0, max(2.0, 1.0 + Double(wordCount(text)) * 0.36))
+        return UInt64(seconds * 1_000_000_000)
+    }
+
+    private func enqueueSilentSentence(_ text: String) {
+        sentenceCount += 1
+        let sentenceIndex = sentenceCount
+        if firstSentenceIndexOfCurrentSpan == nil {
+            firstSentenceIndexOfCurrentSpan = sentenceIndex
+        }
+
+        let predecessor = jobChain
+        jobChain = Task { [weak self] in
+            if let predecessor {
+                _ = try? await predecessor.value
+            }
+            try Task.checkCancellation()
+            guard let self, !self.isCancelled else { return }
+
+            self.startOrdinalBySentence[sentenceIndex] = 0
+            if !self.didFireStartCallback {
+                self.didFireStartCallback = true
+                self.onPlaybackStarted()
+            }
+            self.silentSentenceHandler?(text)
+            self.fireDueCues()
+            try await Task.sleep(nanoseconds: Self.silentDisplayNanoseconds(for: text))
+        }
+    }
     /// Sentence fetches run in parallel but can finish unevenly. Starting
     /// after only the first chunk lets AVAudioPlayerNode run dry before the
     /// next network response arrives, which sounds like words are skipping.
@@ -977,8 +1031,14 @@ final class StreamingTTSSession {
 
     private func enqueueSentence(_ text: String) {
         // No audio engine? Drop the sentence silently — never fall
-        // back to a system synthesizer (different voice).
-        guard let playerNode, let format else { return }
+        // back to a system synthesizer (different voice). A silent session
+        // has none on purpose and shows the sentence instead.
+        guard let playerNode, let format else {
+            if silentSentenceHandler != nil {
+                enqueueSilentSentence(text)
+            }
+            return
+        }
 
         sentenceCount += 1
         let sentenceIndex = sentenceCount
